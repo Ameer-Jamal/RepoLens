@@ -327,6 +327,128 @@ class PullRequestCommentServiceTests(unittest.TestCase):
         self.assertIn("pulls/comments/301", url)
 
     # -------------------------------------------------------------------------
+    # Resolve / Unresolve Comment Tests
+    # -------------------------------------------------------------------------
+
+    @patch("services.pull_request_comment_service.requests.post")
+    def test_resolve_bitbucket_comment(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        mock_post.return_value = mock_resp
+
+        res = self.service.resolve_comment(self.bb_repo, 42, 201)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["comment_id"], 201)
+        self.assertTrue(res["resolved"])
+        self.assertEqual(res["provider"], "bitbucket")
+
+        url = mock_post.call_args[0][0]
+        self.assertIn("pullrequests/42/comments/201/resolve", url)
+
+    @patch("services.pull_request_comment_service.requests.delete")
+    def test_unresolve_bitbucket_comment(self, mock_delete):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 204
+        mock_delete.return_value = mock_resp
+
+        res = self.service.resolve_comment(self.bb_repo, 42, 201, unresolve=True)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["comment_id"], 201)
+        self.assertFalse(res["resolved"])
+
+        url = mock_delete.call_args[0][0]
+        self.assertIn("pullrequests/42/comments/201/resolve", url)
+
+    @patch("services.pull_request_comment_service.requests.get")
+    @patch("services.pull_request_comment_service.requests.post")
+    def test_resolve_bitbucket_comment_fallback_parent(self, mock_post, mock_get):
+        # 1. First POST returns 404 (child reply)
+        err_resp = MagicMock()
+        err_resp.ok = False
+        err_resp.status_code = 404
+
+        # 2. GET returns comment with parent id 100
+        c_resp = MagicMock()
+        c_resp.ok = True
+        c_resp.json.return_value = {"id": 101, "parent": {"id": 100}}
+        mock_get.return_value = c_resp
+
+        # 3. Second POST on parent succeeds
+        ok_resp = MagicMock()
+        ok_resp.ok = True
+        mock_post.side_effect = [err_resp, ok_resp]
+
+        res = self.service.resolve_comment(self.bb_repo, 42, 101)
+        self.assertTrue(res["success"])
+        self.assertEqual(mock_post.call_count, 2)
+        second_url = mock_post.call_args_list[1][0][0]
+        self.assertIn("pullrequests/42/comments/100/resolve", second_url)
+
+    @patch("services.pull_request_comment_service.requests.post")
+    def test_resolve_github_thread_direct_thread_id(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "data": {
+                "resolveReviewThread": {
+                    "thread": {"id": "PRRT_kwDOA123", "isResolved": True}
+                }
+            }
+        }
+        mock_post.return_value = mock_resp
+
+        res = self.service.resolve_comment(self.gh_repo, 10, "PRRT_kwDOA123")
+        self.assertTrue(res["success"])
+        self.assertEqual(res["thread_id"], "PRRT_kwDOA123")
+        self.assertTrue(res["resolved"])
+        self.assertEqual(res["provider"], "github")
+
+    @patch("services.pull_request_comment_service.requests.post")
+    def test_resolve_github_thread_lookup_by_comment_id(self, mock_post):
+        # 1. GraphQL lookup query response
+        lookup_resp = MagicMock()
+        lookup_resp.ok = True
+        lookup_resp.json.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "PRRT_abc987",
+                                    "isResolved": False,
+                                    "comments": {
+                                        "nodes": [{"databaseId": 302}]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+        # 2. GraphQL mutation response
+        mutation_resp = MagicMock()
+        mutation_resp.ok = True
+        mutation_resp.json.return_value = {
+            "data": {
+                "resolveReviewThread": {
+                    "thread": {"id": "PRRT_abc987", "isResolved": True}
+                }
+            }
+        }
+        mock_post.side_effect = [lookup_resp, mutation_resp]
+
+        res = self.service.resolve_comment(self.gh_repo, 10, 302)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["thread_id"], "PRRT_abc987")
+        self.assertTrue(res["resolved"])
+        self.assertEqual(mock_post.call_count, 2)
+
+    # -------------------------------------------------------------------------
     # Validation Tests
     # -------------------------------------------------------------------------
 
@@ -342,6 +464,9 @@ class PullRequestCommentServiceTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.service.delete_comment(self.bb_repo, 42, None)
+
+        with self.assertRaises(ValueError):
+            self.service.resolve_comment(self.bb_repo, 42, None)
 
 
 if __name__ == "__main__":

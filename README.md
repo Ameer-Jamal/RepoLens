@@ -98,6 +98,8 @@ Read tools do not change provider data. The explicitly named create, update, and
 - `reply_to_pr_comments` (Reply to multiple threads on one pull request in a single call)
 - `edit_pr_comment` (Edit an existing pull request comment)
 - `delete_pr_comment` (Delete a comment from a pull request)
+- `resolve_pr_comment` (Resolve or reopen a comment thread on a pull request)
+- `unresolve_pr_comment` (Reopen / unresolve an existing comment thread on a pull request)
 - `list_developer_candidates`
 - `create_pull_request` (Create one GitHub or Bitbucket PR from an existing remote branch)
 - `get_git_repository_context` (Infer provider, repository, remote, branch, and auth context from a local Git checkout)
@@ -109,7 +111,7 @@ For AI-driven PR creation, a good workflow is:
 3. Use `repo_dir` or explicit `provider`/`workspace`/`slug` when calling PR tools so the MCP does not depend on the desktop app's active repository.
 4. Call `create_pull_request` with `source_branch`, `target_branch`, `title`, and `description`.
 
-`list_pull_requests`, `get_pr_diff`, `get_commit_diff`, `get_pr_comments`, `add_pr_comment`, `reply_to_pr_comment`, `reply_to_pr_comments`, `edit_pr_comment`, `delete_pr_comment`, `create_pull_request`, and `update_pull_request` accept `repo_dir` for local-checkout-based repository inference. `create_pull_request` does not edit files, create commits, push branches, or mutate RepoLens app configuration. For MCP automation, prefer environment variables such as `REPOLENS_GITHUB_TOKEN`, `REPOLENS_BITBUCKET_USERNAME` (your Atlassian email), and `REPOLENS_BITBUCKET_API_TOKEN` over relying on the desktop app's currently selected repository.
+`list_pull_requests`, `get_pr_diff`, `get_commit_diff`, `get_pr_comments`, `add_pr_comment`, `reply_to_pr_comment`, `reply_to_pr_comments`, `edit_pr_comment`, `delete_pr_comment`, `resolve_pr_comment`, `unresolve_pr_comment`, `create_pull_request`, and `update_pull_request` accept `repo_dir` for local-checkout-based repository inference. `create_pull_request` does not edit files, create commits, push branches, or mutate RepoLens app configuration. For MCP automation, prefer environment variables such as `REPOLENS_GITHUB_TOKEN`, `REPOLENS_BITBUCKET_USERNAME` (your Atlassian email), and `REPOLENS_BITBUCKET_API_TOKEN` over relying on the desktop app's currently selected repository.
 
 ### **General Setup**
 

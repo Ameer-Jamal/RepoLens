@@ -1038,6 +1038,58 @@ class RepoLensMCPBackend:
             **result,
         }
 
+    def resolve_pr_comment(
+        self,
+        comment_id: str | int,
+        *,
+        pr_id: str | int = "",
+        reference: str = "",
+        unresolve: bool = False,
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Resolve or reopen/unresolve a comment thread on a pull request."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_comment_service.resolve_comment(
+            repo,
+            resolved_pr_id,
+            comment_id,
+            unresolve=unresolve,
+        )
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": resolved_pr_id,
+            **result,
+        }
+
     def resolve_repository(
         self,
         *,
@@ -1565,8 +1617,13 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
     ) -> dict[str, Any]:
         """Add a general comment or an inline code review comment to a pull request.
 
+        Note for AI agents: Write in a natural, concise, human-like engineer tone (1-3 sentences).
+        Avoid robotic AI pleasantries, greetings, or meta-commentary (e.g. avoid 'Certainly!',
+        'Great suggestion!', 'Thank you for the review!', or 'As an AI...'). State technical details
+        or changes directly.
+
         Args:
-            body: The text of the comment to post.
+            body: The text of the comment to post (write in a concise, natural, human-like engineer tone).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             file_path: Optional relative file path for inline code comments (e.g. "src/main.py").
@@ -1606,9 +1663,14 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
     ) -> dict[str, Any]:
         """Reply to an existing comment thread on a pull request.
 
+        Note for AI agents: Write replies in a natural, concise, human engineer tone (1-3 sentences).
+        Avoid robotic AI filler, pleasantries, or boilerplate (e.g. avoid 'Certainly!', 'Great catch!',
+        'Thank you for the feedback!', or 'As an AI...'). State what was updated or resolved directly
+        (e.g., 'Fixed in abc1234', 'Added the missing null check here', 'Renamed bean to avoid conflict').
+
         Args:
             comment_id: The ID of the comment to reply to.
-            body: The text of the reply.
+            body: The text of the reply (write in a concise, natural, human-like engineer tone).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -1642,8 +1704,12 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
     ) -> dict[str, Any]:
         """Reply to multiple comment threads on the same pull request in one call.
 
+        Note for AI agents: Write replies in a natural, concise, human engineer tone (1-3 sentences per thread).
+        Avoid robotic AI filler, pleasantries, or boilerplate (e.g. avoid 'Certainly!', 'Great catch!',
+        'Thank you for the feedback!', or 'As an AI...'). State what was updated or resolved directly.
+
         Args:
-            replies: Items containing a comment_id and body. Each reply is attempted independently.
+            replies: Items containing 'comment_id' and 'body' (human-like, concise response text).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID, or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -1677,9 +1743,12 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
     ) -> dict[str, Any]:
         """Edit an existing comment on a pull request.
 
+        Note for AI agents: Write in a natural, concise, human engineer tone. Avoid robotic AI filler
+        or boilerplate. State technical context directly.
+
         Args:
             comment_id: The ID of the comment to edit.
-            body: The updated text of the comment.
+            body: The updated text of the comment (write in a concise, natural, human-like engineer tone).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -1727,6 +1796,78 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
             comment_id=comment_id,
             pr_id=pr_id,
             reference=reference,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def resolve_pr_comment(
+        comment_id: str,
+        pr_id: str = "",
+        reference: str = "",
+        unresolve: bool = False,
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Resolve or reopen a comment thread on a pull request.
+
+        Args:
+            comment_id: The ID of the comment or review thread to resolve.
+            pr_id: Pull request number or ID (e.g. "42").
+            reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
+            unresolve: If True, reopens/unresolves the thread instead of resolving it. Default False.
+            provider: 'github' or 'bitbucket' (defaults to configured provider).
+            workspace: Repository owner/workspace.
+            slug: Repository slug/name.
+            scope: Repo scope ('active', 'selected', or 'specific:<owner>/<slug>').
+            repo_dir: Local repository directory path.
+        """
+        return backend.resolve_pr_comment(
+            comment_id=comment_id,
+            pr_id=pr_id,
+            reference=reference,
+            unresolve=unresolve,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def unresolve_pr_comment(
+        comment_id: str,
+        pr_id: str = "",
+        reference: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Reopen / unresolve an existing comment thread on a pull request.
+
+        Args:
+            comment_id: The ID of the comment or review thread to unresolve.
+            pr_id: Pull request number or ID (e.g. "42").
+            reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
+            provider: 'github' or 'bitbucket' (defaults to configured provider).
+            workspace: Repository owner/workspace.
+            slug: Repository slug/name.
+            scope: Repo scope ('active', 'selected', or 'specific:<owner>/<slug>').
+            repo_dir: Local repository directory path.
+        """
+        return backend.resolve_pr_comment(
+            comment_id=comment_id,
+            pr_id=pr_id,
+            reference=reference,
+            unresolve=True,
             provider=provider,
             workspace=workspace,
             slug=slug,

@@ -292,6 +292,23 @@ class PullRequestCommentService:
             return self._delete_github_comment(repo, pr_id, comment_id)
         return self._delete_bitbucket_comment(repo, pr_id, comment_id)
 
+    def resolve_comment(
+        self,
+        repo: dict,
+        pr_id: str | int,
+        comment_id: str | int,
+        *,
+        unresolve: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve or reopen/unresolve a comment / review thread on a pull request."""
+        if not comment_id:
+            raise ValueError("Comment ID is required to resolve a comment.")
+
+        provider = (repo.get("provider") or self.config.get_provider() or "bitbucket").lower()
+        if provider == "github":
+            return self._resolve_github_thread(repo, pr_id, comment_id, unresolve=unresolve)
+        return self._resolve_bitbucket_comment(repo, pr_id, comment_id, unresolve=unresolve)
+
     # -------------------------------------------------------------------------
     # Bitbucket Implementation Details
     # -------------------------------------------------------------------------
@@ -419,6 +436,67 @@ class PullRequestCommentService:
             "success": True,
             "comment_id": int(comment_id),
             "deleted": True,
+            "provider": "bitbucket",
+        }
+
+    def _resolve_bitbucket_comment(
+        self,
+        repo: dict,
+        pr_id: str | int,
+        comment_id: str | int,
+        *,
+        unresolve: bool = False,
+    ) -> dict[str, Any]:
+        config = self._get_bitbucket_config(repo)
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{config['workspace']}/{config['slug']}/pullrequests/{pr_id}/comments/{comment_id}/resolve"
+        )
+        if unresolve:
+            response = requests.delete(
+                url,
+                auth=(config["username"], config["password"]),
+                timeout=20,
+            )
+        else:
+            response = requests.post(
+                url,
+                auth=(config["username"], config["password"]),
+                timeout=20,
+            )
+
+        # Fallback: If comment_id was a reply, the resolve endpoint may require the root comment ID
+        if not response.ok and response.status_code == 404:
+            comment_url = (
+                f"https://api.bitbucket.org/2.0/repositories/"
+                f"{config['workspace']}/{config['slug']}/pullrequests/{pr_id}/comments/{comment_id}"
+            )
+            c_res = requests.get(comment_url, auth=(config["username"], config["password"]), timeout=15)
+            if c_res.ok:
+                parent_id = c_res.json().get("parent", {}).get("id")
+                if parent_id and str(parent_id) != str(comment_id):
+                    parent_url = (
+                        f"https://api.bitbucket.org/2.0/repositories/"
+                        f"{config['workspace']}/{config['slug']}/pullrequests/{pr_id}/comments/{parent_id}/resolve"
+                    )
+                    if unresolve:
+                        response = requests.delete(
+                            parent_url,
+                            auth=(config["username"], config["password"]),
+                            timeout=20,
+                        )
+                    else:
+                        response = requests.post(
+                            parent_url,
+                            auth=(config["username"], config["password"]),
+                            timeout=20,
+                        )
+
+        response.raise_for_status()
+        return {
+            "success": True,
+            "comment_id": int(comment_id) if str(comment_id).isdigit() else comment_id,
+            "resolved": not unresolve,
             "provider": "bitbucket",
         }
 
@@ -675,6 +753,130 @@ class PullRequestCommentService:
             "success": True,
             "comment_id": int(comment_id),
             "deleted": True,
+            "provider": "github",
+        }
+
+    def _resolve_github_thread(
+        self,
+        repo: dict,
+        pr_id: str | int,
+        comment_id: str | int,
+        *,
+        unresolve: bool = False,
+    ) -> dict[str, Any]:
+        config = self._get_github_config(repo)
+        token = (self.config.get_github_token() or "").strip()
+        if not token:
+            raise ValueError("GitHub token is required to resolve review threads.")
+
+        thread_id = str(comment_id).strip()
+
+        # If comment_id is not already a GraphQL Node ID (starts with PRRT_), lookup the reviewThread ID
+        if not thread_id.startswith("PRRT_"):
+            try:
+                pr_number = int(pr_id)
+            except (ValueError, TypeError):
+                raise ValueError("Valid pull request number is required to lookup review thread.")
+
+            query = """
+            query($owner: String!, $repo: String!, $pr: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pr) {
+                  reviewThreads(first: 100) {
+                    nodes {
+                      id
+                      isResolved
+                      comments(first: 100) {
+                        nodes {
+                          databaseId
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+            lookup_res = requests.post(
+                "https://api.github.com/graphql",
+                json={
+                    "query": query,
+                    "variables": {
+                        "owner": config["owner"],
+                        "repo": config["repo"],
+                        "pr": pr_number,
+                    },
+                },
+                headers={
+                    "Authorization": f"bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                timeout=15,
+            )
+            lookup_res.raise_for_status()
+            data = lookup_res.json()
+            threads = (
+                data.get("data", {})
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("reviewThreads", {})
+                .get("nodes", [])
+            )
+
+            matched_thread_id = None
+            for t in threads:
+                if t.get("id") == thread_id:
+                    matched_thread_id = t.get("id")
+                    break
+                for c in t.get("comments", {}).get("nodes", []):
+                    if str(c.get("databaseId")) == str(comment_id):
+                        matched_thread_id = t.get("id")
+                        break
+                if matched_thread_id:
+                    break
+
+            if not matched_thread_id:
+                raise ValueError(
+                    f"Could not find review thread for comment ID '{comment_id}'. "
+                    "Note: Only PR review/diff threads can be resolved in GitHub (issue comments cannot be resolved)."
+                )
+            thread_id = matched_thread_id
+
+        mutation_name = "unresolveReviewThread" if unresolve else "resolveReviewThread"
+        mutation = f"""
+        mutation($threadId: ID!) {{
+          {mutation_name}(input: {{ threadId: $threadId }}) {{
+            thread {{
+              id
+              isResolved
+            }}
+          }}
+        }}
+        """
+        response = requests.post(
+            "https://api.github.com/graphql",
+            json={
+                "query": mutation,
+                "variables": {"threadId": thread_id},
+            },
+            headers={
+                "Authorization": f"bearer {token}",
+                "Content-Type": "application/json",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        res_data = response.json()
+        if "errors" in res_data:
+            err_msg = "; ".join(e.get("message", "Unknown error") for e in res_data["errors"])
+            raise RuntimeError(f"GitHub GraphQL error resolving thread: {err_msg}")
+
+        thread_info = res_data.get("data", {}).get(mutation_name, {}).get("thread", {})
+        return {
+            "success": True,
+            "thread_id": thread_info.get("id") or thread_id,
+            "comment_id": comment_id,
+            "resolved": thread_info.get("isResolved", not unresolve),
             "provider": "github",
         }
 
@@ -1054,5 +1256,11 @@ class PullRequestCommentService:
                 snippet = (root.get("body") or "").strip().replace("\n", " ")[:100]
                 lines.append(f"- **[RESOLVED]** {target} by @{root.get('author')}: {snippet}")
             lines.append("")
+
+        lines.append("## Comment Guidelines for AI / Automation")
+        lines.append("When adding comments or replying to PR threads, communicate like a natural human software engineer:")
+        lines.append("- **Concise & Direct**: Keep comments brief (typically 1-3 sentences) focused strictly on the technical issue, fix, or rationale.")
+        lines.append("- **No AI Stereotypes**: Avoid canned AI pleasantries and robotic templates (e.g., do NOT write 'Certainly!', 'Great catch!', 'Thank you for the feedback!', 'I hope this helps!', or 'As an AI model...').")
+        lines.append("- **Natural Tone**: State what changed or why plainly (e.g., 'Good catch, added the null check in abc1234', 'Updated bean qualifier to prevent collision', 'Kept this method private since it is only called by the internal parser').")
 
         return "\n".join(lines).strip()

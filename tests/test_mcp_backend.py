@@ -606,3 +606,35 @@ def test_delete_pr_comment(mock_backend):
         assert res["success"] is True
         assert res["comment_id"] == 123
         mock_delete.assert_called_once()
+
+
+def test_resolve_pr_comment(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_comment_service, "resolve_comment") as mock_resolve:
+        mock_resolve.return_value = {"success": True, "comment_id": 123, "resolved": True}
+        res = backend.resolve_pr_comment(comment_id="123", pr_id="42")
+        assert res["success"] is True
+        assert res["comment_id"] == 123
+        assert res["resolved"] is True
+        mock_resolve.assert_called_once_with(
+            backend.resolve_repository(),
+            "42",
+            "123",
+            unresolve=False,
+        )
+
+
+def test_unresolve_pr_comment(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_comment_service, "resolve_comment") as mock_resolve:
+        mock_resolve.return_value = {"success": True, "comment_id": 123, "resolved": False}
+        res = backend.resolve_pr_comment(comment_id="123", pr_id="42", unresolve=True)
+        assert res["success"] is True
+        assert res["comment_id"] == 123
+        assert res["resolved"] is False
+        mock_resolve.assert_called_once_with(
+            backend.resolve_repository(),
+            "42",
+            "123",
+            unresolve=True,
+        )
