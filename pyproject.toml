@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repolens"
+version = "1.0.0"
+description = "AI-Ready Repository and PR Context for Desktop and MCP Clients"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Ameer Jamal" }
+]
+keywords = ["mcp", "git", "diff", "pull-requests", "bitbucket", "github", "code-review", "ai"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "PyQt5>=5.15.7",
+    "Pygments>=2.14.0",
+    "requests>=2.28.0",
+    "mcp>=1.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.scripts]
+repolens = "main:main"
+repolens-mcp = "mcp_server:main"
+repolens-install-mcp = "install_mcp:main"
+
+[project.urls]
+Homepage = "https://github.com/Ameer-Jamal/GitDiffExtractor"
+Repository = "https://github.com/Ameer-Jamal/GitDiffExtractor"
+Issues = "https://github.com/Ameer-Jamal/GitDiffExtractor/issues"
+
+[tool.setuptools]
+py-modules = [
+    "main",
+    "mcp_server",
+    "install_mcp",
+    "ConfigManager",
+    "headless_config",
+]
+packages = [
+    "services",
+    "models",
+    "ui",
+]
+
+[tool.setuptools.package-data]
+"*" = ["*.json"]

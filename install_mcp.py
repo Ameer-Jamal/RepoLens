@@ -37,7 +37,16 @@ def repo_root() -> Path:
 
 
 def server_script() -> Path:
-    return repo_root() / "mcp_server.py"
+    direct = repo_root() / "mcp_server.py"
+    if direct.exists():
+        return direct
+    try:
+        import mcp_server
+        if mcp_server.__file__:
+            return Path(mcp_server.__file__).resolve()
+    except ImportError:
+        pass
+    return direct
 
 
 def readme_path() -> Path:

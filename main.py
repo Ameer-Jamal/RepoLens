@@ -1485,8 +1485,15 @@ class RepoLens(QWidget):
         self.developer_filter_combo.blockSignals(block)
 
 
-if __name__ == '__main__':
-    app = QApplication([])
+def main() -> int:
+    import sys
+    app = QApplication(sys.argv)
     repo_lens = RepoLens()
     repo_lens.show()
-    app.exec_()
+    return app.exec_()
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main())
+

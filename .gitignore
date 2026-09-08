@@ -2,3 +2,9 @@
 __pycache__
 .venv
 .git_diff_extractor.json
+.repolens.json
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+

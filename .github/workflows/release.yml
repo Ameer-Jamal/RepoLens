@@ -1,0 +1,251 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump strategy'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+          - none
+          - custom
+        default: auto
+      custom_version:
+        description: 'Explicit version (e.g. 1.0.0, required only if bump_type is custom)'
+        required: false
+        default: ''
+      draft:
+        description: 'Create as a draft release'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Create as a prerelease'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  prepare-release:
+    name: Determine & Bump Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compute & Apply Version Bump
+        id: bump
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            echo "Triggered by tag push: $TAG ($VERSION)"
+            python .github/scripts/bump_version.py --set-version "$VERSION"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          else
+            BUMP_TYPE="${{ github.event.inputs.bump_type }}"
+            CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+            
+            if [ "$BUMP_TYPE" = "custom" ]; then
+              if [ -z "$CUSTOM_VERSION" ]; then
+                echo "Error: custom_version must be provided when bump_type is 'custom'"
+                exit 1
+              fi
+              python .github/scripts/bump_version.py --set-version "$CUSTOM_VERSION"
+            else
+              python .github/scripts/bump_version.py --type "$BUMP_TYPE"
+            fi
+            
+            VERSION=$(cat pyproject.toml | grep -m1 '^version =' | cut -d '"' -f2)
+            TAG="v$VERSION"
+            
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            if ! git diff --quiet pyproject.toml repolens.spec; then
+              git add pyproject.toml repolens.spec
+              git commit -m "chore(release): bump version to $TAG [skip ci]"
+              git push origin HEAD:${{ github.ref_name }}
+            fi
+            
+            if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+              git tag "$TAG"
+              git push origin "$TAG"
+            fi
+          fi
+
+  build-wheels:
+    name: Build Python Package (sdist & wheel)
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tool
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build sdist and wheel
+        run: |
+          python -m build
+
+      - name: Check distribution artifacts
+        run: |
+          twine check dist/*
+
+      - name: Upload Python artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+          if-no-files-found: error
+
+  build-desktop:
+    name: Build Desktop App (${{ matrix.os }})
+    needs: prepare-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: RepoLens-macos.zip
+          - os: windows-latest
+            artifact_name: RepoLens-windows-x64.zip
+          - os: ubuntu-latest
+            artifact_name: RepoLens-linux-x86_64.tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1-mesa-dev libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0
+
+      - name: Install dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --clean --noconfirm repolens.spec
+
+      - name: Package macOS application (.zip)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          ditto -c -k --keepParent RepoLens.app RepoLens-macos.zip
+
+      - name: Package Windows application (.zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\RepoLens\* -DestinationPath dist\RepoLens-windows-x64.zip
+
+      - name: Package Linux application (.tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          tar -czf dist/RepoLens-linux-x86_64.tar.gz -C dist/RepoLens .
+
+      - name: Upload desktop binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  create-release:
+    name: Publish GitHub Release
+    needs: [prepare-release, build-wheels, build-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Download Python packages
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: release-assets
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macos-latest
+          path: release-assets
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows-latest
+          path: release-assets
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-ubuntu-latest
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: Release ${{ needs.prepare-release.outputs.tag }}
+          draft: ${{ github.event.inputs.draft || false }}
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          generate_release_notes: true
+          files: release-assets/*
+
+      - name: Publish to PyPI (if PYPI_API_TOKEN configured)
+        if: env.HAS_PYPI_TOKEN == 'true'
+        env:
+          HAS_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN != '' }}
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install twine
+          twine upload release-assets/*.whl release-assets/*.tar.gz --skip-existing
