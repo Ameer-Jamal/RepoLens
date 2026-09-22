@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
 )
 
 from services.pull_request_service import PullRequestService
@@ -97,6 +98,7 @@ class PRReviewTab(QWidget):
         self._current_ci_status: Optional[dict[str, Any]] = None
 
         self._build_ui()
+        self.populate_repositories()
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -104,7 +106,7 @@ class PRReviewTab(QWidget):
         main_layout.setSpacing(8)
 
         # -------------------------------------------------------------
-        # Top Header Bar: Metadata, Badges, Typography Zoom & Actions
+        # Top Header Bar: Controls, Metadata, Badges, Typography & Actions
         # -------------------------------------------------------------
         top_card = QFrame(self)
         top_card.setStyleSheet(
@@ -117,7 +119,82 @@ class PRReviewTab(QWidget):
         )
         top_layout = QVBoxLayout(top_card)
         top_layout.setContentsMargins(6, 6, 6, 6)
-        top_layout.setSpacing(6)
+        top_layout.setSpacing(8)
+
+        # Row 0: Repository selector, Filter mode, PR selector, and Load PRs button
+        row0 = QHBoxLayout()
+        row0.setSpacing(8)
+
+        repo_lbl = QLabel("Repository:", self)
+        repo_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600;")
+        row0.addWidget(repo_lbl)
+
+        self.repo_combo = QComboBox(self)
+        self.repo_combo.setMinimumWidth(180)
+        self.repo_combo.setStyleSheet(
+            "QComboBox {"
+            "  background-color: #1a1d27; color: #f1f5f9; border: 1px solid #2e384d; border-radius: 5px; padding: 4px 8px; font-size: 11px;"
+            "}"
+            "QComboBox:hover { border-color: #3b82f6; }"
+            "QComboBox QAbstractItemView { background-color: #161821; color: #f1f5f9; selection-background-color: #2563eb; selection-color: #ffffff; border: 1px solid #2e384d; }"
+        )
+        self.repo_combo.currentIndexChanged.connect(self._on_repo_selection_changed)
+        row0.addWidget(self.repo_combo)
+
+        filter_lbl = QLabel("Filter:", self)
+        filter_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600;")
+        row0.addWidget(filter_lbl)
+
+        self.filter_combo = QComboBox(self)
+        self.filter_combo.setMinimumWidth(100)
+        self.filter_combo.setStyleSheet(
+            "QComboBox {"
+            "  background-color: #1a1d27; color: #f1f5f9; border: 1px solid #2e384d; border-radius: 5px; padding: 4px 8px; font-size: 11px;"
+            "}"
+            "QComboBox:hover { border-color: #3b82f6; }"
+            "QComboBox QAbstractItemView { background-color: #161821; color: #f1f5f9; selection-background-color: #2563eb; selection-color: #ffffff; border: 1px solid #2e384d; }"
+        )
+        self.filter_combo.addItem("Open PRs", "open")
+        self.filter_combo.addItem("Merged PRs", "merged")
+        self.filter_combo.addItem("All PRs", "all")
+        self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
+        row0.addWidget(self.filter_combo)
+
+        pr_lbl = QLabel("PR:", self)
+        pr_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600;")
+        row0.addWidget(pr_lbl)
+
+        self.pr_combo = QComboBox(self)
+        self.pr_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.pr_combo.setMinimumWidth(260)
+        self.pr_combo.setStyleSheet(
+            "QComboBox {"
+            "  background-color: #1a1d27; color: #f1f5f9; border: 1px solid #2e384d; border-radius: 5px; padding: 4px 8px; font-size: 11px;"
+            "}"
+            "QComboBox:hover { border-color: #3b82f6; }"
+            "QComboBox QAbstractItemView { background-color: #161821; color: #f1f5f9; selection-background-color: #2563eb; selection-color: #ffffff; border: 1px solid #2e384d; }"
+        )
+        self.pr_combo.currentIndexChanged.connect(self._on_pr_combo_changed)
+        row0.addWidget(self.pr_combo)
+
+        self.load_prs_btn = QPushButton("⟳ Load PRs", self)
+        self.load_prs_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #1e2433; color: #93c5fd; border: 1px solid #2e384d; border-radius: 5px; padding: 4px 10px; font-size: 11px; font-weight: 600;"
+            "}"
+            "QPushButton:hover { background-color: #273043; color: #bfdbfe; }"
+            "QPushButton:disabled { background-color: #161821; color: #475569; border-color: #1e2433; }"
+        )
+        self.load_prs_btn.clicked.connect(lambda: self.load_repository_prs())
+        row0.addWidget(self.load_prs_btn)
+
+        top_layout.addLayout(row0)
+
+        divider = QFrame(self)
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        divider.setStyleSheet("background-color: #222734; border: none; min-height: 1px; max-height: 1px; margin: 2px 0;")
+        top_layout.addWidget(divider)
 
         # Row 1: PR Title, Status Badge, Branches, Author
         row1 = QHBoxLayout()
@@ -242,13 +319,207 @@ class PRReviewTab(QWidget):
         self.status_bar.setStyleSheet("color: #64748b; font-size: 11px; padding: 2px 4px;")
         main_layout.addWidget(self.status_bar)
 
+    @staticmethod
+    def _repo_label(repo: Optional[dict[str, Any]]) -> str:
+        if not repo:
+            return "No repository"
+        owner = repo.get("owner") or ""
+        slug = repo.get("slug") or repo.get("name") or repo.get("repo") or ""
+        label = f"{owner}/{slug}".strip("/")
+        return label or repo.get("name") or "Unnamed Repository"
+
+    def populate_repositories(self, selected_repo: Optional[dict[str, Any]] = None):
+        """Populate the repository dropdown from configuration."""
+        repos = []
+        if hasattr(self.config_manager, "get_selected_repositories"):
+            repos = self.config_manager.get_selected_repositories() or []
+        if not repos and hasattr(self.config_manager, "get_active_repository"):
+            active = self.config_manager.get_active_repository()
+            if active and (active.get("slug") or active.get("name")):
+                repos = [active]
+
+        self.repo_combo.blockSignals(True)
+        self.repo_combo.clear()
+
+        if not repos:
+            self.repo_combo.addItem("No repositories configured", None)
+            self.repo_combo.blockSignals(False)
+            return
+
+        target_id = str((selected_repo or {}).get("id") or "")
+        target_label = self._repo_label(selected_repo) if selected_repo else ""
+        selected_index = 0
+
+        for idx, r in enumerate(repos):
+            lbl = self._repo_label(r)
+            self.repo_combo.addItem(lbl, r)
+            if target_id and str(r.get("id") or "") == target_id:
+                selected_index = idx
+            elif target_label and lbl == target_label:
+                selected_index = idx
+
+        self.repo_combo.setCurrentIndex(selected_index)
+        self.repo_combo.blockSignals(False)
+
+    def _selected_repo(self) -> Optional[dict[str, Any]]:
+        data = self.repo_combo.currentData()
+        if isinstance(data, dict):
+            return data
+        if hasattr(self.config_manager, "get_active_repository"):
+            active = self.config_manager.get_active_repository()
+            if active and (active.get("slug") or active.get("name")):
+                return active
+        return None
+
+    def _on_repo_selection_changed(self, index: int):
+        if index < 0:
+            return
+        repo = self._selected_repo()
+        if repo:
+            self.load_repository_prs()
+
+    def _on_filter_changed(self, index: int):
+        self.load_repository_prs()
+
+    def populate_pull_requests(self, prs: list[dict[str, Any]]):
+        """Populate the PR combo box with a list of pull requests."""
+        self.pr_combo.blockSignals(True)
+        self.pr_combo.clear()
+        if not prs:
+            self.pr_combo.addItem("No pull requests found", None)
+            self.pr_combo.blockSignals(False)
+            return
+
+        for pr in prs:
+            pr_id = str(pr.get("id") or "")
+            title = (pr.get("title") or "").strip()
+            state = (pr.get("state") or "").upper()
+            author = pr.get("author_display") or pr.get("author") or ""
+            author_suffix = f" ({author})" if author else ""
+            label = f"#{pr_id} · {title} [{state}]{author_suffix}"
+            self.pr_combo.addItem(label, pr)
+
+        self.pr_combo.blockSignals(False)
+
+    def _on_pr_combo_changed(self, index: int):
+        if index < 0:
+            return
+        pr_data = self.pr_combo.itemData(index)
+        if isinstance(pr_data, dict):
+            repo = self._selected_repo()
+            self.load_pull_request(pr_data, repo)
+
+    def sync_prs(self, prs: list[dict[str, Any]]):
+        """Sync pull requests loaded elsewhere (e.g. PR Lens) into the PR dropdown."""
+        if not prs:
+            return
+        current_data = self.pr_combo.currentData()
+        if not current_data or self.pr_combo.count() == 0:
+            self.populate_pull_requests(prs)
+
+    def on_tab_activated(self, prs: Optional[list[dict[str, Any]]] = None):
+        """Called when the PR Review tab becomes active."""
+        if self.repo_combo.count() == 0 or self.repo_combo.currentData() is None:
+            self.populate_repositories()
+
+        if prs and (self.pr_combo.count() == 0 or not self.pr_combo.currentData()):
+            self.populate_pull_requests(prs)
+
+        # If no PR is currently loaded, try to load one
+        if not self._current_pr:
+            if self.pr_combo.count() > 0 and isinstance(self.pr_combo.itemData(0), dict):
+                first_pr = self.pr_combo.itemData(0)
+                repo = self._selected_repo()
+                self.load_pull_request(first_pr, repo)
+            elif self._selected_repo():
+                self.load_repository_prs()
+
+    def load_repository_prs(self):
+        """Fetch pull requests for the currently selected repository and populate the PR combo."""
+        repo = self._selected_repo()
+        if not repo:
+            self.status_bar.setText("No repository selected. Please configure repositories in Settings.")
+            return
+
+        filter_mode = self.filter_combo.currentData() or "open"
+        repo_label = self._repo_label(repo)
+        self.status_bar.setText(f"Loading {filter_mode} pull requests for {repo_label}...")
+        self.load_prs_btn.setEnabled(False)
+        self.load_prs_btn.setText("Loading...")
+
+        def _fetch():
+            records, _ = self.pr_service.list_pull_requests_for_repo(
+                repo,
+                filter_mode=filter_mode,
+            )
+            return records
+
+        def _on_loaded(records: list[dict[str, Any]]):
+            self.load_prs_btn.setEnabled(True)
+            self.load_prs_btn.setText("⟳ Load PRs")
+            self.populate_pull_requests(records)
+            self.status_bar.setText(f"Loaded {len(records)} pull request(s) for {repo_label}.")
+            if records:
+                self.load_pull_request(records[0], repo)
+
+        def _on_error(exc: Exception):
+            self.load_prs_btn.setEnabled(True)
+            self.load_prs_btn.setText("⟳ Load PRs")
+            self.status_bar.setText(f"Failed to load PRs: {exc}")
+            QMessageBox.warning(self, "PR Load Error", f"Unable to fetch pull requests for {repo_label}:\n{exc}")
+
+        if self.task_runner:
+            self.task_runner.run(
+                _fetch,
+                description=f"Fetch PRs for {repo_label}",
+                on_result=_on_loaded,
+                on_error=_on_error,
+            )
+        else:
+            try:
+                records = _fetch()
+                _on_loaded(records)
+            except Exception as exc:
+                _on_error(exc)
+
     def load_pull_request(self, pr_data: dict[str, Any], repo_data: Optional[dict[str, Any]] = None):
         """Load pull request details, diff, comments, and CI status."""
         self._current_pr = pr_data
         self._current_repo = repo_data or self._resolve_repo_from_pr(pr_data)
 
-        # Update Header Metadata
+        # Synchronize repo_combo if current_repo matches an item
+        repo_id = str(self._current_repo.get("id") or "")
+        repo_label = self._repo_label(self._current_repo)
+        self.repo_combo.blockSignals(True)
+        for i in range(self.repo_combo.count()):
+            r = self.repo_combo.itemData(i)
+            if isinstance(r, dict):
+                if (repo_id and str(r.get("id") or "") == repo_id) or self._repo_label(r) == repo_label:
+                    self.repo_combo.setCurrentIndex(i)
+                    break
+        self.repo_combo.blockSignals(False)
+
+        # Synchronize pr_combo
         pr_id = str(pr_data.get("id") or "")
+        found = False
+        self.pr_combo.blockSignals(True)
+        for i in range(self.pr_combo.count()):
+            p = self.pr_combo.itemData(i)
+            if isinstance(p, dict) and str(p.get("id") or "") == pr_id:
+                self.pr_combo.setCurrentIndex(i)
+                found = True
+                break
+        if not found and pr_id:
+            title = (pr_data.get("title") or "").strip()
+            state = (pr_data.get("state") or "").upper()
+            author = pr_data.get("author_display") or pr_data.get("author") or ""
+            author_suffix = f" ({author})" if author else ""
+            label = f"#{pr_id} · {title} [{state}]{author_suffix}"
+            self.pr_combo.addItem(label, pr_data)
+            self.pr_combo.setCurrentIndex(self.pr_combo.count() - 1)
+        self.pr_combo.blockSignals(False)
+
+        # Update Header Metadata
         title = pr_data.get("title") or "Untitled PR"
         state = (pr_data.get("state") or "OPEN").upper()
         source = pr_data.get("source_branch") or ""
@@ -284,33 +555,52 @@ class PRReviewTab(QWidget):
         # Asynchronously fetch diff, comments, and CI status
         self.status_bar.setText("Loading diff, comments, and CI status...")
         if self.task_runner:
-            self.task_runner.start(
+            self.task_runner.run(
                 self._fetch_pr_review_data,
-                (self._current_repo, pr_data),
-                self._on_review_data_loaded,
-                self._on_review_data_error,
+                self._current_repo,
+                pr_data,
+                description=f"Load PR #{pr_id} Review",
+                on_result=self._on_review_data_loaded,
+                on_error=self._on_review_data_error,
             )
         else:
             try:
                 data = self._fetch_pr_review_data(self._current_repo, pr_data)
                 self._on_review_data_loaded(data)
             except Exception as exc:
-                self._on_review_data_error(str(exc))
+                self._on_review_data_error(exc)
 
     def _resolve_repo_from_pr(self, pr_data: dict[str, Any]) -> dict[str, Any]:
-        # Try active repo from config
-        active_repo = self.config_manager.get_active_repository()
-        if active_repo:
-            return active_repo
+        repo_id = str(pr_data.get("repo_id") or "")
+        repo_label = str(pr_data.get("repo_label") or "").lower()
+
+        # Check selected repositories first
+        repos = []
+        if hasattr(self.config_manager, "get_selected_repositories"):
+            repos = self.config_manager.get_selected_repositories() or []
+        for repo in repos:
+            if repo_id and str(repo.get("id") or "") == repo_id:
+                return repo
+            owner = str(repo.get("owner") or "").lower()
+            slug = str(repo.get("slug") or repo.get("name") or repo.get("repo") or "").lower()
+            if repo_label and repo_label == f"{owner}/{slug}".strip("/"):
+                return repo
+
+        # Check active repo from config
+        if hasattr(self.config_manager, "get_active_repository"):
+            active_repo = self.config_manager.get_active_repository()
+            if active_repo and (active_repo.get("slug") or active_repo.get("name")):
+                return active_repo
+
         return {
-            "provider": pr_data.get("provider") or self.config_manager.get_provider(),
-            "owner": pr_data.get("owner") or "",
-            "slug": pr_data.get("repo_slug") or "",
-            "local_dir": pr_data.get("repo_local_dir") or self.config_manager.get_repo_dir(),
+            "provider": pr_data.get("provider") or (getattr(self.config_manager, "get_provider", lambda: "bitbucket")() or "bitbucket"),
+            "owner": pr_data.get("owner") or (repo_label.split("/")[0] if "/" in repo_label else ""),
+            "slug": pr_data.get("slug") or (repo_label.split("/")[-1] if "/" in repo_label else ""),
+            "local_dir": pr_data.get("repo_local_dir") or (getattr(self.config_manager, "get_repo_dir", lambda: "")() or ""),
         }
 
     def _fetch_pr_review_data(self, repo: dict[str, Any], pr: dict[str, Any]) -> dict[str, Any]:
-        repo_dir = repo.get("local_dir") or ""
+        repo_dir = (repo or {}).get("local_dir") or ""
         pr_id = str(pr.get("id") or "")
 
         # 1. Fetch Diff (try local git diff first, fallback to provider HTTP diff)
@@ -343,9 +633,12 @@ class PRReviewTab(QWidget):
         # 3. Fetch CI Status
         commit_hash = pr.get("source_commit") or ""
         ci_status = {}
-        try:
-            ci_status = self.pr_service.get_pull_request_statuses(repo, commit_hash)
-        except Exception:
+        if commit_hash:
+            try:
+                ci_status = self.pr_service.get_pull_request_statuses(repo, commit_hash)
+            except Exception:
+                ci_status = {"state": "UNKNOWN", "total_count": 0, "statuses": []}
+        else:
             ci_status = {"state": "UNKNOWN", "total_count": 0, "statuses": []}
 
         return {
@@ -402,9 +695,13 @@ class PRReviewTab(QWidget):
         self.ci_badge.setEnabled(bool(ci_data.get("statuses")))
 
         total_threads = comments_dict.get("count", 0)
-        self.status_bar.setText(f"Loaded {len(file_summaries)} changed file(s), {total_threads} review comment(s).")
+        if diff_text:
+            self.status_bar.setText(f"Loaded {len(file_summaries)} changed file(s), {total_threads} review comment(s).")
+        else:
+            self.status_bar.setText(f"Diff is empty or could not be generated from repository ({total_threads} review comments).")
 
-    def _on_review_data_error(self, error_msg: str):
+    def _on_review_data_error(self, error: Any):
+        error_msg = str(error)
         self.status_bar.setText(f"Failed to load PR review: {error_msg}")
         QMessageBox.warning(self, "Review Loading Error", f"Unable to load PR review data:\n{error_msg}")
 

@@ -598,6 +598,8 @@ class RepoLens(QWidget):
             item.setText(descriptor)
             self.pr_list.addItem(item)
         self.pr_list.setUpdatesEnabled(True)
+        if hasattr(self, "pr_review_tab"):
+            self.pr_review_tab.sync_prs(getattr(self, "prs", []))
 
     def searchPRs(self):
         """Filter PRs based on the search input."""
@@ -748,6 +750,9 @@ class RepoLens(QWidget):
         previous_widget = self.tabs.widget(self._previous_tab_index)
         current_widget = self.tabs.widget(index)
         self._previous_tab_index = index
+
+        if hasattr(self, "pr_review_tab") and current_widget is self.pr_review_tab:
+            self.pr_review_tab.on_tab_activated(prs=getattr(self, "prs", []))
 
         if previous_widget is not self.settings_tab or current_widget is self.settings_tab:
             return
@@ -1016,14 +1021,20 @@ class RepoLens(QWidget):
 
     def openPRInReviewTab(self, item=None):
         """Switch to PR Review tab and load the selected PR diff and comments."""
-        item = item or self.pr_list.currentItem()
-        if item is not None:
-            pr_data = item.data(Qt.UserRole)
-            if isinstance(pr_data, dict):
-                self.pr_review_tab.load_pull_request(pr_data)
-                self.tabs.setCurrentWidget(self.pr_review_tab)
-                return
-        QMessageBox.information(self, "PR Review", "Please select a pull request to review.")
+        try:
+            if item is None or isinstance(item, bool):
+                item = self.pr_list.currentItem()
+            if item is not None:
+                pr_data = item.data(Qt.UserRole)
+                if isinstance(pr_data, dict):
+                    if hasattr(self, "pr_review_tab"):
+                        self.pr_review_tab.sync_prs(getattr(self, "prs", []))
+                        self.pr_review_tab.load_pull_request(pr_data)
+                        self.tabs.setCurrentWidget(self.pr_review_tab)
+                        return
+            QMessageBox.information(self, "PR Review", "Please select a pull request to review.")
+        except Exception as exc:
+            QMessageBox.critical(self, "PR Review Error", f"Failed to open PR review:\n{exc}")
 
     @staticmethod
     def openFile(file_path, app_path=''):

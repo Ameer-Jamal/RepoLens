@@ -98,6 +98,52 @@ index 1234567..89abcdef 100644
         self.assertIsNotNone(tab)
         self.assertIsNotNone(tab.sidebar)
         self.assertIsNotNone(tab.diff_stream)
+        self.assertIsNotNone(tab.repo_combo)
+        self.assertIsNotNone(tab.pr_combo)
+        self.assertIsNotNone(tab.filter_combo)
+        self.assertIsNotNone(tab.load_prs_btn)
+
+    def test_pr_review_tab_with_task_runner(self):
+        from ui.TaskRunner import TaskRunner
+        task_runner = TaskRunner()
+        tab = PRReviewTab(self.config, task_runner=task_runner)
+
+        pr_data = {
+            "id": "123",
+            "title": "Fix auth race condition",
+            "state": "OPEN",
+            "source_branch": "fix/auth",
+            "destination_branch": "main",
+            "author_display": "Jane Dev",
+            "repo_id": "1",
+            "repo_label": "workspace/repo",
+        }
+        # Should not raise AttributeError: 'TaskRunner' object has no attribute 'start'
+        tab.load_pull_request(pr_data)
+        self.assertEqual(tab._current_pr, pr_data)
+        self.assertIn("123", tab.title_label.text())
+
+    def test_pr_review_tab_combos_and_sync(self):
+        tab = PRReviewTab(self.config)
+        prs = [
+            {"id": "10", "title": "First PR", "state": "OPEN", "author": "alice"},
+            {"id": "11", "title": "Second PR", "state": "MERGED", "author": "bob"},
+        ]
+        tab.sync_prs(prs)
+        self.assertEqual(tab.pr_combo.count(), 2)
+        self.assertIn("10", tab.pr_combo.itemText(0))
+        self.assertIn("11", tab.pr_combo.itemText(1))
+
+        # Test selecting a PR in combo
+        tab._on_pr_combo_changed(1)
+        self.assertEqual(tab._current_pr["id"], "11")
+
+    def test_pr_review_tab_on_tab_activated(self):
+        tab = PRReviewTab(self.config)
+        prs = [{"id": "99", "title": "Active PR", "state": "OPEN", "author": "charlie"}]
+        tab.on_tab_activated(prs=prs)
+        self.assertEqual(tab.pr_combo.count(), 1)
+        self.assertEqual(tab._current_pr["id"], "99")
 
 
 if __name__ == "__main__":
