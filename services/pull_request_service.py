@@ -513,6 +513,45 @@ class PullRequestService:
             include_code_context=include_code_context,
         )
 
+    def _to_repo_ref(self, repo: dict):
+        from models.contribution_models import RepositoryRef
+        return RepositoryRef.from_dict(repo)
+
+    def _provider_client_for_repo(self, repo: dict):
+        from services.provider_api import build_provider_client_for_name
+        provider = (repo.get("provider") or self.config.get_provider() or "bitbucket").lower()
+        return build_provider_client_for_name(provider, self.config)
+
+    def get_pull_request_statuses(self, repo: dict, commit_hash: str) -> dict[str, Any]:
+        client = self._provider_client_for_repo(repo)
+        repo_ref = self._to_repo_ref(repo)
+        return client.get_pull_request_statuses(repo_ref, commit_hash)
+
+    def approve_pull_request(self, repo: dict, pr_id: str | int, comment: str = "") -> dict[str, Any]:
+        client = self._provider_client_for_repo(repo)
+        repo_ref = self._to_repo_ref(repo)
+        return client.approve_pull_request(repo_ref, pr_id, comment=comment)
+
+    def unapprove_pull_request(self, repo: dict, pr_id: str | int) -> dict[str, Any]:
+        client = self._provider_client_for_repo(repo)
+        repo_ref = self._to_repo_ref(repo)
+        return client.unapprove_pull_request(repo_ref, pr_id)
+
+    def request_changes_on_pr(self, repo: dict, pr_id: str | int, comment: str) -> dict[str, Any]:
+        client = self._provider_client_for_repo(repo)
+        repo_ref = self._to_repo_ref(repo)
+        return client.request_changes_on_pr(repo_ref, pr_id, comment=comment)
+
+    def get_file_content_at_ref(self, repo: dict, file_path: str, ref: str) -> str:
+        client = self._provider_client_for_repo(repo)
+        repo_ref = self._to_repo_ref(repo)
+        return client.get_file_content(repo_ref, file_path, ref)
+
+    def get_pull_request_diff_text(self, repo: dict, pr_id: str | int) -> str:
+        client = self._provider_client_for_repo(repo)
+        repo_ref = self._to_repo_ref(repo)
+        return client.get_pull_request_diff_text(repo_ref, pr_id)
+
     # Legacy / backward-compatibility aliases
     _map_bitbucket_comment = staticmethod(PullRequestCommentService._map_bitbucket_comment)
     _map_github_review_comment = staticmethod(PullRequestCommentService._map_github_review_comment)

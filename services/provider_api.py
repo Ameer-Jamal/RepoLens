@@ -285,6 +285,57 @@ class ProviderClient(ABC):
     def context_key(self) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    def get_pull_request_statuses(
+        self,
+        repository: RepositoryRef,
+        commit_hash: str,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def approve_pull_request(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+        comment: str = "",
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unapprove_pull_request(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def request_changes_on_pr(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+        comment: str,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_file_content(
+        self,
+        repository: RepositoryRef,
+        file_path: str,
+        ref: str,
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_pull_request_diff_text(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+    ) -> str:
+        raise NotImplementedError
+
     @staticmethod
     def _matches_developer(*candidates: str, developer: str) -> bool:
         developer = (developer or "").strip()
@@ -1097,6 +1148,200 @@ class BitbucketProviderClient(ProviderClient):
         response.raise_for_status()
         return response.json()
 
+    def get_pull_request_statuses(
+        self,
+        repository: RepositoryRef,
+        commit_hash: str,
+    ) -> dict:
+        commit_hash = (commit_hash or "").strip()
+        if not commit_hash:
+            return {
+                "state": "UNKNOWN",
+                "total_count": 0,
+                "successful_count": 0,
+                "failed_count": 0,
+                "inprogress_count": 0,
+                "statuses": [],
+            }
+        username, password = self._auth()
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/commit/{commit_hash}/statuses"
+        )
+        try:
+            data = _get_json_with_retry(url, auth=(username, password), timeout=20)
+        except Exception:
+            return {
+                "state": "UNKNOWN",
+                "total_count": 0,
+                "successful_count": 0,
+                "failed_count": 0,
+                "inprogress_count": 0,
+                "statuses": [],
+            }
+        items = data.get("values", []) if isinstance(data, dict) else []
+        statuses = []
+        successful_count = 0
+        failed_count = 0
+        inprogress_count = 0
+
+        for item in items:
+            raw_state = (item.get("state") or "").upper()
+            norm_state = "UNKNOWN"
+            if raw_state == "SUCCESSFUL":
+                norm_state = "SUCCESSFUL"
+                successful_count += 1
+            elif raw_state in {"FAILED", "STOPPED"}:
+                norm_state = "FAILED"
+                failed_count += 1
+            elif raw_state in {"INPROGRESS", "NEW"}:
+                norm_state = "INPROGRESS"
+                inprogress_count += 1
+
+            statuses.append({
+                "name": item.get("name") or item.get("key") or "Build",
+                "state": norm_state,
+                "raw_state": raw_state,
+                "description": item.get("description") or "",
+                "url": item.get("url") or "",
+                "type": item.get("type") or "commit_status",
+                "created_on": item.get("created_on") or "",
+                "updated_on": item.get("updated_on") or "",
+            })
+
+        if failed_count > 0:
+            overall_state = "FAILED"
+        elif inprogress_count > 0:
+            overall_state = "INPROGRESS"
+        elif items and successful_count == len(items):
+            overall_state = "SUCCESSFUL"
+        else:
+            overall_state = "UNKNOWN" if items else "NO_STATUSES"
+
+        return {
+            "state": overall_state,
+            "total_count": len(items),
+            "successful_count": successful_count,
+            "failed_count": failed_count,
+            "inprogress_count": inprogress_count,
+            "statuses": statuses,
+        }
+
+    def approve_pull_request(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+        comment: str = "",
+    ) -> dict:
+        username, password = self._auth()
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/approve"
+        )
+        response = requests.post(url, auth=(username, password), timeout=20)
+        response.raise_for_status()
+        comment_data = None
+        if comment and comment.strip():
+            comment_url = (
+                f"https://api.bitbucket.org/2.0/repositories/"
+                f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/comments"
+            )
+            c_resp = requests.post(
+                comment_url,
+                auth=(username, password),
+                json={"content": {"raw": comment.strip()}},
+                timeout=20,
+            )
+            if c_resp.ok:
+                comment_data = c_resp.json()
+        return {
+            "approved": True,
+            "pr_id": str(pr_id),
+            "comment": comment_data,
+        }
+
+    def unapprove_pull_request(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+    ) -> dict:
+        username, password = self._auth()
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/approve"
+        )
+        response = requests.delete(url, auth=(username, password), timeout=20)
+        response.raise_for_status()
+        return {
+            "approved": False,
+            "pr_id": str(pr_id),
+        }
+
+    def request_changes_on_pr(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+        comment: str,
+    ) -> dict:
+        username, password = self._auth()
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/request-changes"
+        )
+        # Attempt request-changes endpoint
+        try:
+            requests.post(url, auth=(username, password), timeout=20)
+        except Exception:
+            pass
+
+        # Post review comment
+        comment_url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/comments"
+        )
+        c_resp = requests.post(
+            comment_url,
+            auth=(username, password),
+            json={"content": {"raw": f"**Changes Requested**\n\n{comment.strip()}"}},
+            timeout=20,
+        )
+        c_resp.raise_for_status()
+        return {
+            "changes_requested": True,
+            "pr_id": str(pr_id),
+            "comment": c_resp.json(),
+        }
+
+    def get_file_content(
+        self,
+        repository: RepositoryRef,
+        file_path: str,
+        ref: str,
+    ) -> str:
+        username, password = self._auth()
+        cleaned_path = file_path.lstrip("/")
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/src/{ref}/{cleaned_path}"
+        )
+        response = requests.get(url, auth=(username, password), timeout=25)
+        response.raise_for_status()
+        return response.text
+
+    def get_pull_request_diff_text(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+    ) -> str:
+        username, password = self._auth()
+        url = (
+            f"https://api.bitbucket.org/2.0/repositories/"
+            f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/diff"
+        )
+        response = requests.get(url, auth=(username, password), timeout=30)
+        response.raise_for_status()
+        return response.text
+
 
 class GitHubProviderClient(ProviderClient):
     provider_name = "github"
@@ -1492,6 +1737,207 @@ class GitHubProviderClient(ProviderClient):
         )
         response.raise_for_status()
         return response.json()
+
+    def get_pull_request_statuses(
+        self,
+        repository: RepositoryRef,
+        commit_hash: str,
+    ) -> dict:
+        commit_hash = (commit_hash or "").strip()
+        if not commit_hash:
+            return {
+                "state": "UNKNOWN",
+                "total_count": 0,
+                "successful_count": 0,
+                "failed_count": 0,
+                "inprogress_count": 0,
+                "statuses": [],
+            }
+
+        statuses = []
+        successful_count = 0
+        failed_count = 0
+        inprogress_count = 0
+
+        # 1. Query check runs
+        check_runs_url = (
+            f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/commits/{commit_hash}/check-runs"
+        )
+        try:
+            data = _get_json_with_retry(check_runs_url, headers=self._headers(), timeout=20)
+            runs = data.get("check_runs", []) if isinstance(data, dict) else []
+            for run in runs:
+                status = (run.get("status") or "").lower()
+                conclusion = (run.get("conclusion") or "").lower()
+
+                if status == "completed":
+                    if conclusion in {"success", "neutral", "skipped"}:
+                        norm_state = "SUCCESSFUL"
+                        successful_count += 1
+                    else:
+                        norm_state = "FAILED"
+                        failed_count += 1
+                else:
+                    norm_state = "INPROGRESS"
+                    inprogress_count += 1
+
+                statuses.append({
+                    "name": run.get("name") or "Check Run",
+                    "state": norm_state,
+                    "raw_state": conclusion or status,
+                    "description": (run.get("output") or {}).get("title") or run.get("conclusion") or status,
+                    "url": run.get("html_url") or "",
+                    "type": "check_run",
+                    "created_on": run.get("started_at") or "",
+                    "updated_on": run.get("completed_at") or "",
+                })
+        except Exception:
+            pass
+
+        # 2. Query combined commit status
+        status_url = (
+            f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/commits/{commit_hash}/status"
+        )
+        try:
+            status_data = _get_json_with_retry(status_url, headers=self._headers(), timeout=20)
+            raw_statuses = status_data.get("statuses", []) if isinstance(status_data, dict) else []
+            for item in raw_statuses:
+                st = (item.get("state") or "").lower()
+                if st == "success":
+                    norm_state = "SUCCESSFUL"
+                    successful_count += 1
+                elif st in {"failure", "error"}:
+                    norm_state = "FAILED"
+                    failed_count += 1
+                else:
+                    norm_state = "INPROGRESS"
+                    inprogress_count += 1
+
+                statuses.append({
+                    "name": item.get("context") or "Status",
+                    "state": norm_state,
+                    "raw_state": st,
+                    "description": item.get("description") or "",
+                    "url": item.get("target_url") or "",
+                    "type": "commit_status",
+                    "created_on": item.get("created_at") or "",
+                    "updated_on": item.get("updated_at") or "",
+                })
+        except Exception:
+            pass
+
+        if failed_count > 0:
+            overall_state = "FAILED"
+        elif inprogress_count > 0:
+            overall_state = "INPROGRESS"
+        elif statuses and successful_count == len(statuses):
+            overall_state = "SUCCESSFUL"
+        else:
+            overall_state = "UNKNOWN" if statuses else "NO_STATUSES"
+
+        return {
+            "state": overall_state,
+            "total_count": len(statuses),
+            "successful_count": successful_count,
+            "failed_count": failed_count,
+            "inprogress_count": inprogress_count,
+            "statuses": statuses,
+        }
+
+    def approve_pull_request(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+        comment: str = "",
+    ) -> dict:
+        url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}/reviews"
+        payload = {
+            "event": "APPROVE",
+            "body": comment.strip() if comment else "Approved via RepoLens",
+        }
+        response = requests.post(url, headers=self._headers(), json=payload, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "approved": True,
+            "pr_id": str(pr_id),
+            "review_id": data.get("id"),
+        }
+
+    def unapprove_pull_request(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+    ) -> dict:
+        reviews_url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}/reviews"
+        response = requests.get(reviews_url, headers=self._headers(), timeout=20)
+        response.raise_for_status()
+        reviews = response.json() if isinstance(response.json(), list) else []
+        current_user = (self.config.get_github_owner() or "").lower()
+        dismissed_count = 0
+        for r in reviews:
+            user_login = ((r.get("user") or {}).get("login") or "").lower()
+            if r.get("state") == "APPROVED" and (not current_user or user_login == current_user):
+                review_id = r.get("id")
+                dismiss_url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}/reviews/{review_id}/dismissals"
+                d_resp = requests.put(
+                    dismiss_url,
+                    headers=self._headers(),
+                    json={"message": "Approval dismissed via RepoLens"},
+                    timeout=20,
+                )
+                if d_resp.ok:
+                    dismissed_count += 1
+        return {
+            "approved": False,
+            "pr_id": str(pr_id),
+            "dismissed_count": dismissed_count,
+        }
+
+    def request_changes_on_pr(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+        comment: str,
+    ) -> dict:
+        url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}/reviews"
+        payload = {
+            "event": "REQUEST_CHANGES",
+            "body": comment.strip() if comment else "Changes requested via RepoLens",
+        }
+        response = requests.post(url, headers=self._headers(), json=payload, timeout=20)
+        response.raise_for_status()
+        return {
+            "changes_requested": True,
+            "pr_id": str(pr_id),
+            "review_id": response.json().get("id"),
+        }
+
+    def get_file_content(
+        self,
+        repository: RepositoryRef,
+        file_path: str,
+        ref: str,
+    ) -> str:
+        cleaned_path = file_path.lstrip("/")
+        url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/contents/{cleaned_path}"
+        headers = dict(self._headers())
+        headers["Accept"] = "application/vnd.github.raw+json"
+        response = requests.get(url, headers=headers, params={"ref": ref}, timeout=25)
+        response.raise_for_status()
+        return response.text
+
+    def get_pull_request_diff_text(
+        self,
+        repository: RepositoryRef,
+        pr_id: str | int,
+    ) -> str:
+        url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}"
+        headers = dict(self._headers())
+        headers["Accept"] = "application/vnd.github.v3.diff"
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.text
 
 
 def build_provider_client(config: ConfigManager) -> ProviderClient:

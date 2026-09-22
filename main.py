@@ -24,6 +24,7 @@ from services.pull_request_service import PullRequestService
 from services.RepositoryProvider import RepositoryProvider
 from ui.SettingsTab import SettingsTab
 from ui.TaskRunner import TaskRunner
+from ui.PRReviewTab import PRReviewTab
 
 DEFAULT_BITBUCKET_WORKSPACE = os.environ.get('BITBUCKET_WORKSPACE', 'example-workspace').strip() or 'example-workspace'
 
@@ -79,6 +80,7 @@ class RepoLens(QWidget):
 
         # Build tabs
         self.pr_tab_widget = self.prExtractDiffWidget()
+        self.pr_review_tab = PRReviewTab(self.config_manager, self.task_runner)
         self.branch_viewer = BranchCommitViewer(self.config_manager, self.task_runner)
         self.create_pr_tab = CreatePRTab(self.config_manager, self.task_runner)
         self.settings_tab = SettingsTab(self.config_manager, self.task_runner)
@@ -87,8 +89,9 @@ class RepoLens(QWidget):
         self.settings_tab.settingsUpdated.connect(self._on_settings_updated)
         self.settings_tab.activeRepositoriesChanged.connect(self._on_active_repositories_selected)
 
-        # Add both tabs to the QTabWidget
+        # Add tabs to the QTabWidget
         self.tabs.addTab(self.pr_tab_widget, "PR Lens")  # Default tab
+        self.tabs.addTab(self.pr_review_tab, "PR Review")
         self.tabs.addTab(self.branch_viewer, "Branch Commit Viewer")
         self.tabs.addTab(self.create_pr_tab, "Create PR")
         self.tabs.addTab(self.contribution_history_tab, "Contribution History")
@@ -142,7 +145,7 @@ class RepoLens(QWidget):
         # List of Pull Requests
         self.pr_list = QListWidget(self)
         self.pr_list.itemClicked.connect(self.onPRClick)
-        self.pr_list.itemDoubleClicked.connect(self.generateDiff)
+        self.pr_list.itemDoubleClicked.connect(self.openPRInReviewTab)
         self.pr_list.itemSelectionChanged.connect(self._update_generate_button_text)
         self.pr_list.verticalScrollBar().valueChanged.connect(self._on_pr_list_scrolled)
         self.pr_list.setItemDelegate(PRListDelegate(self.pr_list))
@@ -210,8 +213,28 @@ class RepoLens(QWidget):
         repo_filter_layout.addWidget(self.repo_filter_combo)
         layout.addLayout(repo_filter_layout)
 
+        # Review in App & Generate Diff Buttons
+        btn_layout = QHBoxLayout()
+        self.review_button = QPushButton('Review PR in App', self)
+        self.review_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #059669;"
+            "color: white;"
+            "font-weight: 700;"
+            "border: 1px solid #047857;"
+            "border-radius: 6px;"
+            "padding: 6px 12px;"
+            "}"
+            "QPushButton:hover { background-color: #10b981; }"
+            "QPushButton:pressed { background-color: #047857; }"
+            "QPushButton:disabled { background-color: #334155; color: #64748b; }"
+        )
+        self.review_button.setToolTip("Open this pull request in the dedicated PR Review tab with syntax highlighting and comments.")
+        self.review_button.clicked.connect(self.openPRInReviewTab)
+        btn_layout.addWidget(self.review_button)
+
         # Generate Diff Button
-        self.run_button = QPushButton('Generate Diff', self)
+        self.run_button = QPushButton('Export Diff File', self)
         self.run_button.setStyleSheet(
             "QPushButton {"
             "background-color: #0b63ce;"
@@ -226,7 +249,8 @@ class RepoLens(QWidget):
             "QPushButton:disabled { background-color: #7aa8df; color: #f3f7ff; }"
         )
         self.run_button.clicked.connect(self.generateDiff)
-        layout.addWidget(self.run_button)
+        btn_layout.addWidget(self.run_button)
+        layout.addLayout(btn_layout)
         self._run_button_label = self.run_button.text()
         self._update_list_button_text()
         self._update_generate_button_text()
@@ -989,6 +1013,17 @@ class RepoLens(QWidget):
             commit_hash = item.data(Qt.UserRole)
             self.commit_input.setText(commit_hash)
             self.config_manager.set_commit_hashes(commit_hash)
+
+    def openPRInReviewTab(self, item=None):
+        """Switch to PR Review tab and load the selected PR diff and comments."""
+        item = item or self.pr_list.currentItem()
+        if item is not None:
+            pr_data = item.data(Qt.UserRole)
+            if isinstance(pr_data, dict):
+                self.pr_review_tab.load_pull_request(pr_data)
+                self.tabs.setCurrentWidget(self.pr_review_tab)
+                return
+        QMessageBox.information(self, "PR Review", "Please select a pull request to review.")
 
     @staticmethod
     def openFile(file_path, app_path=''):

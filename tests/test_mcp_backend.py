@@ -659,3 +659,66 @@ def test_unresolve_pr_comment(mock_backend):
             "123",
             unresolve=True,
         )
+
+
+def test_get_pr_ci_status(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "get_pull_request") as mock_pr, \
+         patch.object(backend.pr_service, "get_pull_request_statuses") as mock_status:
+        mock_pr.return_value = {"id": 42, "title": "Test PR", "source_commit": "c0ffee"}
+        mock_status.return_value = {
+            "state": "SUCCESSFUL",
+            "total_count": 5,
+            "successful_count": 5,
+            "failed_count": 0,
+            "inprogress_count": 0,
+            "statuses": [{"name": "CI", "state": "SUCCESSFUL"}],
+        }
+
+        res = backend.get_pr_ci_status(pr_id="42")
+        assert res["pr_id"] == "42"
+        assert res["commit_hash"] == "c0ffee"
+        assert res["ci_status"]["state"] == "SUCCESSFUL"
+        assert res["ci_status"]["successful_count"] == 5
+
+
+def test_approve_pull_request(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "approve_pull_request") as mock_approve:
+        mock_approve.return_value = {"approved": True, "pr_id": "42"}
+        res = backend.approve_pull_request(pr_id="42", comment="Looks great!")
+        assert res["pr_id"] == "42"
+        assert res["result"]["approved"] is True
+        mock_approve.assert_called_once()
+
+
+def test_unapprove_pull_request(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "unapprove_pull_request") as mock_unapprove:
+        mock_unapprove.return_value = {"approved": False, "pr_id": "42"}
+        res = backend.unapprove_pull_request(pr_id="42")
+        assert res["pr_id"] == "42"
+        assert res["result"]["approved"] is False
+        mock_unapprove.assert_called_once()
+
+
+def test_request_changes_on_pr(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "request_changes_on_pr") as mock_req:
+        mock_req.return_value = {"changes_requested": True, "pr_id": "42"}
+        res = backend.request_changes_on_pr(pr_id="42", comment="Please fix unit test")
+        assert res["pr_id"] == "42"
+        assert res["result"]["changes_requested"] is True
+        mock_req.assert_called_once()
+
+
+def test_get_file_content_at_ref(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "get_file_content_at_ref") as mock_content:
+        mock_content.return_value = "def hello(): pass\n"
+        res = backend.get_file_content_at_ref(file_path="src/app.py", ref="feature/test")
+        assert res["file_path"] == "src/app.py"
+        assert res["ref"] == "feature/test"
+        assert res["content"] == "def hello(): pass\n"
+        mock_content.assert_called_once()
+

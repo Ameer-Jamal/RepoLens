@@ -1339,6 +1339,222 @@ class RepoLensMCPBackend:
             return text, False
         return text[:limit], True
 
+    def get_pr_ci_status(
+        self,
+        *,
+        reference: str = "",
+        pr_id: str | int = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Fetch CI build status and check runs for a pull request."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+            pr = self.pr_service.get_pull_request(repo, resolved_pr_id)
+
+        commit_hash = pr.get("source_commit") or pr.get("destination_commit") or ""
+        statuses = self.pr_service.get_pull_request_statuses(repo, commit_hash)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "pr_title": pr.get("title") or "",
+            "commit_hash": commit_hash,
+            "ci_status": statuses,
+        }
+
+    def approve_pull_request(
+        self,
+        *,
+        reference: str = "",
+        pr_id: str | int = "",
+        comment: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Formally approve a pull request with an optional review comment."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_service.approve_pull_request(repo, resolved_pr_id, comment=comment)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "result": result,
+        }
+
+    def unapprove_pull_request(
+        self,
+        *,
+        reference: str = "",
+        pr_id: str | int = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Revoke / dismiss an approval on a pull request."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_service.unapprove_pull_request(repo, resolved_pr_id)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "result": result,
+        }
+
+    def request_changes_on_pr(
+        self,
+        *,
+        comment: str,
+        reference: str = "",
+        pr_id: str | int = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Request changes on a pull request with structured review feedback."""
+        if not comment or not comment.strip():
+            raise ValueError("Feedback comment is required when requesting changes.")
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_service.request_changes_on_pr(repo, resolved_pr_id, comment=comment)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "result": result,
+        }
+
+    def get_file_content_at_ref(
+        self,
+        *,
+        file_path: str,
+        ref: str,
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Retrieve full file content at a specific branch, tag, or commit hash directly via REST API."""
+        if not file_path or not file_path.strip():
+            raise ValueError("file_path is required.")
+        if not ref or not ref.strip():
+            raise ValueError("ref (branch, tag, or commit hash) is required.")
+        repo = self.resolve_repository(
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+            allow_direct=True,
+        )
+        content = self.pr_service.get_file_content_at_ref(repo, file_path.strip(), ref.strip())
+        return {
+            "repository": self._repo_identity(repo),
+            "file_path": file_path,
+            "ref": ref,
+            "content": content,
+        }
+
 
 def create_mcp_server(backend: RepoLensMCPBackend | None = None):
     if FastMCP is None:
@@ -2051,6 +2267,122 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
             repo_dir=repo_dir,
             source_branch=source_branch,
             target_branch=target_branch,
+        )
+
+    @app.tool()
+    def get_pr_ci_status(
+        reference: str = "",
+        pr_id: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Fetch live CI build status, test pipelines, and check runs for a pull request.
+        
+        Inspects GitHub Actions / Check Runs and Bitbucket Commit Statuses to verify build
+        and test pass/fail results prior to review or approval.
+        """
+        return backend.get_pr_ci_status(
+            reference=reference,
+            pr_id=pr_id,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def approve_pull_request(
+        reference: str = "",
+        pr_id: str = "",
+        comment: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Formally approve a pull request with an optional review comment.
+        
+        Submits review approval to GitHub or Bitbucket Cloud.
+        """
+        return backend.approve_pull_request(
+            reference=reference,
+            pr_id=pr_id,
+            comment=comment,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def unapprove_pull_request(
+        reference: str = "",
+        pr_id: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Revoke or dismiss an approval on a pull request."""
+        return backend.unapprove_pull_request(
+            reference=reference,
+            pr_id=pr_id,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def request_changes_on_pr(
+        comment: str,
+        reference: str = "",
+        pr_id: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Submit a formal 'Request Changes' review on a pull request with feedback notes."""
+        return backend.request_changes_on_pr(
+            comment=comment,
+            reference=reference,
+            pr_id=pr_id,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def get_file_content_at_ref(
+        file_path: str,
+        ref: str,
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Retrieve the complete file contents of any file at a specific branch, tag, or commit ref via REST API without requiring a local git checkout."""
+        return backend.get_file_content_at_ref(
+            file_path=file_path,
+            ref=ref,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
         )
 
     return app

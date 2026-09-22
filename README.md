@@ -91,7 +91,8 @@ python3 main.py
 
 4. **Use the main tabs**:
 
-   - `PR Lens`: list/search PRs, filter by developer, and generate PR or commit diffs.
+   - `PR Lens`: list/search PRs, filter by developer, open in PR Review, and generate PR or commit diffs.
+   - `PR Review`: dedicated in-app code review tab with syntax-highlighted diffs, typography font scaling, changed files navigation, live CI status, and interactive inline comment threading & resolution.
    - `Branch Commit Viewer`: inspect branch commits.
    - `Create PR`: create pull requests from configured repositories.
    - `Contribution History`: reconstruct work by developer, repository, branch, and date.
@@ -126,6 +127,11 @@ Read tools do not change provider data. The explicitly named create, update, and
 - `analyze_file_history` (Unified commit and PR history for a specific file)
 - `get_pr_context` (Unified tool to get PR metadata and diff from a URL, ticket, or title, with optional comment threads)
 - `get_pr_comments` (Fetch comments and review threads on a PR with file paths, line numbers, code context snippets, and AI-ready summary)
+- `get_pr_ci_status` (Fetch live CI build status, test pipelines, and check runs for a pull request)
+- `approve_pull_request` (Formally approve a pull request with an optional review comment)
+- `unapprove_pull_request` (Revoke or dismiss an approval on a pull request)
+- `request_changes_on_pr` (Submit a formal 'Request Changes' review on a pull request with feedback notes)
+- `get_file_content_at_ref` (Retrieve complete file contents of any file at a specific branch, tag, or commit ref via REST API)
 - `add_pr_comment` (Add a general or inline code review comment to a pull request)
 - `reply_to_pr_comment` (Reply to an existing comment thread on a pull request)
 - `reply_to_pr_comments` (Reply to multiple threads on one pull request in a single call)

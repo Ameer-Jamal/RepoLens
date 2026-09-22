@@ -63,6 +63,7 @@ class ConfigManager:
         "ai_custom_links_json": "[]",
         "ai_copy_with_prompt": "false",
         "ai_prompt_text": "Review this diff and provide concise feedback:",
+        "diff_font_size": "13",
     }
     LEGACY_REPO_PROVIDER_KEYS = (
         "provider",
@@ -589,6 +590,16 @@ class ConfigManager:
 
     def set_ai_prompt_text(self, text: str) -> None:
         self._set_global("ai_prompt_text", text or "")
+
+    def get_diff_font_size(self) -> int:
+        try:
+            return int(self._get_global("diff_font_size") or "13")
+        except (TypeError, ValueError):
+            return 13
+
+    def set_diff_font_size(self, size: int) -> None:
+        clamped = max(10, min(24, size))
+        self._set_global("diff_font_size", str(clamped))
 
     def get_managed_repo_root(self) -> str:
         stored = self.settings.value("managed_repo_root", "", str)

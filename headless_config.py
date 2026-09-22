@@ -141,5 +141,14 @@ class HeadlessConfig:
             return self.overrides[key]
         return fallback
 
+    def get_diff_font_size(self) -> int:
+        val = self._value("diff_font_size", None)
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+        return self.base_config.get_diff_font_size()
+
     def __getattr__(self, item: str) -> Any:
         return getattr(self.base_config, item)
