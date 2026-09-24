@@ -65,3 +65,4 @@ packages = [
 
 [tool.setuptools.package-data]
 "*" = ["*.json"]
+"ui" = ["*.wav"]

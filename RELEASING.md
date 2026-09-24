@@ -39,18 +39,25 @@ The workflow will automatically:
 
 If you prefer to tag manually from your local terminal:
 
-1. **Verify all tests pass**:
+1. **Set and commit the release version** (replace `1.1.0` with your version):
    ```bash
-   pytest tests/
+   python .github/scripts/bump_version.py --set-version 1.1.0
+   git add pyproject.toml repolens.spec
+   git commit -m "chore(release): bump version to v1.1.0"
    ```
 
-2. **Tag and push**:
+2. **Verify all tests pass**:
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   QT_QPA_PLATFORM=offscreen pytest tests/
    ```
 
-3. The GitHub Actions release workflow will detect the `v*` tag push and build and publish the release for that exact tag.
+3. **Tag and push**:
+   ```bash
+   git tag v1.1.0
+   git push origin v1.1.0
+   ```
+
+4. The GitHub Actions release workflow will detect the `v*` tag push and build and publish the release for that exact tag. It checks that the version inside the tag matches the tag name.
 
 ---
 
@@ -80,4 +87,3 @@ If you wish to publish the Python package to PyPI (`pip install repolens`):
    - Name: `PYPI_API_TOKEN`.
    - Value: `<your-pypi-token>`.
 3. The release workflow will automatically detect this secret and upload wheels and source archives to PyPI.
-

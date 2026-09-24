@@ -64,6 +64,7 @@ class ConfigManager:
         "ai_copy_with_prompt": "false",
         "ai_prompt_text": "Review this diff and provide concise feedback:",
         "diff_font_size": "13",
+        "theme": "Midnight",
     }
     LEGACY_REPO_PROVIDER_KEYS = (
         "provider",
@@ -600,6 +601,15 @@ class ConfigManager:
     def set_diff_font_size(self, size: int) -> None:
         clamped = max(10, min(24, size))
         self._set_global("diff_font_size", str(clamped))
+
+    def get_theme(self) -> str:
+        theme = self._get_global("theme")
+        return theme if theme in ("Midnight", "Aurora", "Forest", "Classic") else "Midnight"
+
+    def set_theme(self, theme: str) -> None:
+        if theme not in ("Midnight", "Aurora", "Forest", "Classic"):
+            raise ValueError(f"Unknown theme: {theme}")
+        self._set_global("theme", theme)
 
     def get_managed_repo_root(self) -> str:
         stored = self.settings.value("managed_repo_root", "", str)

@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import requests
 
 from models.contribution_models import RepositoryRef
 from services.provider_api import BitbucketProviderClient, GitHubProviderClient
@@ -73,6 +74,28 @@ class ProviderApiApprovalsTests(unittest.TestCase):
         self.assertEqual(res["pr_id"], "42")
 
     @patch("requests.post")
+    def test_bitbucket_request_changes_rejects_failed_action(self, mock_post):
+        failed = MagicMock()
+        failed.raise_for_status.side_effect = requests.HTTPError("request changes failed")
+        mock_post.return_value = failed
+
+        with self.assertRaises(requests.HTTPError):
+            self.bb_client.request_changes_on_pr(self.bb_repo, "42", "Please fix this")
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("requests.post")
+    def test_bitbucket_request_changes_reports_partial_comment_failure(self, mock_post):
+        action = MagicMock()
+        comment = MagicMock()
+        comment.raise_for_status.side_effect = requests.HTTPError("comment failed")
+        mock_post.side_effect = [action, comment]
+
+        result = self.bb_client.request_changes_on_pr(self.bb_repo, "42", "Please fix this")
+        self.assertTrue(result["changes_requested"])
+        self.assertIsNone(result["comment"])
+        self.assertIn("comment failed", result["comment_error"])
+
+    @patch("requests.post")
     def test_github_approve_pull_request(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.ok = True
@@ -83,6 +106,35 @@ class ProviderApiApprovalsTests(unittest.TestCase):
         res = self.gh_client.approve_pull_request(self.gh_repo, "10", comment="Approved!")
         self.assertTrue(res["approved"])
         self.assertEqual(res["review_id"], 101)
+
+    @patch("requests.put")
+    @patch("requests.get")
+    def test_github_unapprove_uses_authenticated_user_not_repo_owner(self, mock_get, mock_put):
+        user = MagicMock()
+        user.json.return_value = {"login": "reviewer"}
+        reviews = MagicMock()
+        reviews.json.return_value = [
+            {"id": 10, "state": "APPROVED", "user": {"login": "test_owner"}},
+            {"id": 11, "state": "APPROVED", "user": {"login": "reviewer"}},
+        ]
+        mock_get.side_effect = [user, reviews]
+
+        result = self.gh_client.unapprove_pull_request(self.gh_repo, "42")
+        self.assertEqual(result["dismissed_count"], 1)
+        self.assertIn("/reviews/11/dismissals", mock_put.call_args.args[0])
+
+    @patch("requests.put")
+    @patch("requests.get")
+    def test_github_unapprove_does_not_claim_success_without_own_approval(self, mock_get, mock_put):
+        user = MagicMock()
+        user.json.return_value = {"login": "reviewer"}
+        reviews = MagicMock()
+        reviews.json.return_value = [{"id": 10, "state": "APPROVED", "user": {"login": "test_owner"}}]
+        mock_get.side_effect = [user, reviews]
+
+        with self.assertRaisesRegex(ValueError, "No approval by reviewer"):
+            self.gh_client.unapprove_pull_request(self.gh_repo, "42")
+        mock_put.assert_not_called()
 
     @patch("requests.get")
     def test_bitbucket_get_file_content(self, mock_get):

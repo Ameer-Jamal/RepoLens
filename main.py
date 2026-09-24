@@ -7,7 +7,7 @@ import time
 import webbrowser
 
 import requests
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThreadPool
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit,
                              QPushButton, QFileDialog, QMessageBox, QHBoxLayout, QListWidget,
                              QListWidgetItem, QTabWidget, QRadioButton, QButtonGroup, QProgressDialog, QComboBox)
@@ -25,6 +25,7 @@ from services.RepositoryProvider import RepositoryProvider
 from ui.SettingsTab import SettingsTab
 from ui.TaskRunner import TaskRunner
 from ui.PRReviewTab import PRReviewTab
+from ui.theme import apply_theme
 
 DEFAULT_BITBUCKET_WORKSPACE = os.environ.get('BITBUCKET_WORKSPACE', 'example-workspace').strip() or 'example-workspace'
 
@@ -88,6 +89,7 @@ class RepoLens(QWidget):
         self.settings_tab.providerChanged.connect(self._on_provider_updated)
         self.settings_tab.settingsUpdated.connect(self._on_settings_updated)
         self.settings_tab.activeRepositoriesChanged.connect(self._on_active_repositories_selected)
+        self.settings_tab.themeChanged.connect(self._apply_selected_theme)
 
         # Add tabs to the QTabWidget
         self.tabs.addTab(self.pr_tab_widget, "PR Lens")  # Default tab
@@ -104,8 +106,15 @@ class RepoLens(QWidget):
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
 
+        self._apply_selected_theme()
+
         self.apply_repo_config()
         self._initialize_active_repository()
+
+    def _apply_selected_theme(self):
+        app = QApplication.instance()
+        if app:
+            apply_theme(app, self.config_manager.get_theme())
 
     def initUI(self):
         self.setWindowTitle('RepoLens')
@@ -1534,12 +1543,14 @@ class RepoLens(QWidget):
 def main() -> int:
     import sys
     app = QApplication(sys.argv)
+    app.aboutToQuit.connect(QThreadPool.globalInstance().waitForDone)
     repo_lens = RepoLens()
     repo_lens.show()
-    return app.exec_()
+    result = app.exec_()
+    QThreadPool.globalInstance().waitForDone()
+    return result
 
 
 if __name__ == '__main__':
     import sys
     sys.exit(main())
-

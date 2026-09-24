@@ -45,7 +45,7 @@ class TypographyController(QObject):
         for preferred in self.PREFERRED_FONTS:
             if preferred in families:
                 return preferred
-        return "monospace"
+        return QFontDatabase.systemFont(QFontDatabase.FixedFont).family()
 
     @property
     def font_family(self) -> str:

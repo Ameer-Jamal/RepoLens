@@ -4,7 +4,7 @@ import os
 import webbrowser
 from typing import Any, Optional
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QUrl
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -20,14 +20,19 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QSizePolicy,
+    QCheckBox,
+    QApplication,
 )
 
 from services.pull_request_service import PullRequestService
 from services.pull_request_comment_service import PullRequestCommentService
 from services.diff_service import DiffService
+from services.RepositoryProvider import RepositoryProvider
 from ui.DiffFilesSidebar import DiffFilesSidebar
 from ui.DiffStreamWidget import DiffStreamWidget
+from ui.SearchableComboBox import SearchableComboBox
 from ui.TypographyController import TypographyController
+from ui.theme import apply_theme
 
 
 class CIStatusDialog(QDialog):
@@ -96,6 +101,9 @@ class PRReviewTab(QWidget):
         self._current_pr: Optional[dict[str, Any]] = None
         self._current_repo: Optional[dict[str, Any]] = None
         self._current_ci_status: Optional[dict[str, Any]] = None
+        self._pr_list_request = 0
+        self._review_request = 0
+        self._approved_prs: set[tuple[str, str, str, str]] = set()
 
         self._build_ui()
         self.populate_repositories()
@@ -129,7 +137,7 @@ class PRReviewTab(QWidget):
         repo_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600;")
         row0.addWidget(repo_lbl)
 
-        self.repo_combo = QComboBox(self)
+        self.repo_combo = SearchableComboBox(self, search_placeholder="Search discovered repositories...")
         self.repo_combo.setMinimumWidth(180)
         self.repo_combo.setStyleSheet(
             "QComboBox {"
@@ -141,12 +149,18 @@ class PRReviewTab(QWidget):
         self.repo_combo.currentIndexChanged.connect(self._on_repo_selection_changed)
         row0.addWidget(self.repo_combo)
 
+        self.refresh_repos_btn = QPushButton("↻", self)
+        self.refresh_repos_btn.setToolTip("Refresh repositories from the provider")
+        self.refresh_repos_btn.setFixedWidth(30)
+        self.refresh_repos_btn.clicked.connect(self.refresh_repositories)
+        row0.addWidget(self.refresh_repos_btn)
+
         filter_lbl = QLabel("Filter:", self)
         filter_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600;")
         row0.addWidget(filter_lbl)
 
         self.filter_combo = QComboBox(self)
-        self.filter_combo.setMinimumWidth(100)
+        self.filter_combo.setMinimumWidth(140)
         self.filter_combo.setStyleSheet(
             "QComboBox {"
             "  background-color: #1a1d27; color: #f1f5f9; border: 1px solid #2e384d; border-radius: 5px; padding: 4px 8px; font-size: 11px;"
@@ -164,7 +178,7 @@ class PRReviewTab(QWidget):
         pr_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 600;")
         row0.addWidget(pr_lbl)
 
-        self.pr_combo = QComboBox(self)
+        self.pr_combo = SearchableComboBox(self, search_placeholder="Search PR number, title, branch, author...")
         self.pr_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.pr_combo.setMinimumWidth(260)
         self.pr_combo.setStyleSheet(
@@ -292,6 +306,35 @@ class PRReviewTab(QWidget):
         row2.addWidget(self.approve_btn)
 
         top_layout.addLayout(row2)
+
+        diff_options = QHBoxLayout()
+        diff_options.setSpacing(24)
+        self.ignore_whitespace_checkbox = QCheckBox("Ignore whitespace changes", self)
+        self.hide_blank_lines_checkbox = QCheckBox("Hide blank lines", self)
+        self.ignore_whitespace_checkbox.setMinimumWidth(175)
+        diff_options.addWidget(self.ignore_whitespace_checkbox)
+        diff_options.addWidget(self.hide_blank_lines_checkbox)
+        diff_options.addStretch()
+        top_layout.addLayout(diff_options)
+
+        comments_row = QHBoxLayout()
+        comments_row.setSpacing(8)
+        comments_row.addWidget(QLabel("Show comments:", self))
+        self.general_comments_btn = QPushButton("General comments", self)
+        self.code_comments_btn = QPushButton("Code comments", self)
+        for button in (self.general_comments_btn, self.code_comments_btn):
+            button.setCheckable(True)
+            button.setChecked(True)
+            button.setStyleSheet(
+                "QPushButton { background: #1e2433; color: #94a3b8; border: 1px solid #334155; border-radius: 5px; padding: 4px 10px; }"
+                "QPushButton:checked { background: #1e3a5f; color: #e0f2fe; border-color: #3b82f6; }"
+            )
+            comments_row.addWidget(button)
+        comments_row.addStretch()
+        line_hint = QLabel("Click [+] beside a diff line to comment", self)
+        line_hint.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        comments_row.addWidget(line_hint)
+        top_layout.addLayout(comments_row)
         main_layout.addWidget(top_card)
 
         # -------------------------------------------------------------
@@ -304,12 +347,19 @@ class PRReviewTab(QWidget):
 
         self.sidebar = DiffFilesSidebar(self.splitter)
         self.sidebar.fileSelected.connect(self._on_file_selected)
+        self.typography.fontSizeChanged.connect(self.sidebar.set_font_size)
+        self.sidebar.set_font_size(self.typography.font_size)
         self.splitter.addWidget(self.sidebar)
 
         self.diff_stream = DiffStreamWidget(self.typography, self.splitter)
         self.diff_stream.replySubmitted.connect(self._on_reply_submitted)
         self.diff_stream.resolveToggled.connect(self._on_resolve_toggled)
+        self.diff_stream.addCommentRequested.connect(self._on_add_comment_requested)
+        self.ignore_whitespace_checkbox.toggled.connect(self.diff_stream.set_ignore_whitespace)
+        self.hide_blank_lines_checkbox.toggled.connect(self.diff_stream.set_hide_blank_lines)
         self.splitter.addWidget(self.diff_stream)
+        self.general_comments_btn.toggled.connect(self.diff_stream.set_general_comments_visible)
+        self.code_comments_btn.toggled.connect(self.diff_stream.set_code_comments_visible)
 
         self.splitter.setSizes([280, 800])
         main_layout.addWidget(self.splitter, stretch=1)
@@ -330,9 +380,33 @@ class PRReviewTab(QWidget):
 
     def populate_repositories(self, selected_repo: Optional[dict[str, Any]] = None):
         """Populate the repository dropdown from configuration."""
+        previous_repo = self.repo_combo.currentData()
+        previous_key = (
+            str(previous_repo.get("provider") or "").lower(),
+            self._repo_label(previous_repo),
+        ) if isinstance(previous_repo, dict) else None
         repos = []
         if hasattr(self.config_manager, "get_selected_repositories"):
             repos = self.config_manager.get_selected_repositories() or []
+        selected_keys = {
+            (str(r.get("provider") or "").lower(), str(r.get("id") or r.get("owner") or ""), str(r.get("slug") or ""))
+            for r in repos
+        }
+        try:
+            provider = (self.config_manager.get_provider() or "bitbucket").lower()
+            valid, _, provider_config = RepositoryProvider.validate_provider_config(provider, self.config_manager)
+            if valid:
+                context_key = RepositoryProvider.discovery_context_key(provider, provider_config)
+                discovered, _ = self.config_manager.get_cached_discovered_repositories(provider, context_key)
+                for candidate in discovered:
+                    key = (str(candidate.get("provider") or "").lower(),
+                           str(candidate.get("id") or candidate.get("owner") or ""),
+                           str(candidate.get("slug") or ""))
+                    if key not in selected_keys:
+                        repos.append(candidate)
+                        selected_keys.add(key)
+        except (AttributeError, TypeError, ValueError):
+            pass
         if not repos and hasattr(self.config_manager, "get_active_repository"):
             active = self.config_manager.get_active_repository()
             if active and (active.get("slug") or active.get("name")):
@@ -344,22 +418,71 @@ class PRReviewTab(QWidget):
         if not repos:
             self.repo_combo.addItem("No repositories configured", None)
             self.repo_combo.blockSignals(False)
+            if previous_key:
+                self._pr_list_request += 1
+                self._clear_review()
+                self.populate_pull_requests([])
             return
 
         target_id = str((selected_repo or {}).get("id") or "")
         target_label = self._repo_label(selected_repo) if selected_repo else ""
+        target_provider = str((selected_repo or {}).get("provider") or "").lower()
         selected_index = 0
 
         for idx, r in enumerate(repos):
             lbl = self._repo_label(r)
             self.repo_combo.addItem(lbl, r)
-            if target_id and str(r.get("id") or "") == target_id:
+            self.repo_combo.setItemData(idx, f"{r.get('name') or ''} {r.get('provider') or ''}", Qt.UserRole + 1)
+            same_provider = not target_provider or str(r.get("provider") or "").lower() == target_provider
+            if same_provider and target_id and str(r.get("id") or "") == target_id:
                 selected_index = idx
-            elif target_label and lbl == target_label:
+            elif same_provider and target_label and lbl == target_label:
                 selected_index = idx
 
         self.repo_combo.setCurrentIndex(selected_index)
         self.repo_combo.blockSignals(False)
+        current_repo = self.repo_combo.currentData()
+        current_key = (str(current_repo.get("provider") or "").lower(), self._repo_label(current_repo))
+        if previous_key and previous_key != current_key:
+            self._pr_list_request += 1
+            self._clear_review()
+            self.populate_pull_requests([])
+
+    def refresh_repositories(self):
+        provider = (self.config_manager.get_provider() or "bitbucket").lower()
+        valid, message, provider_config = RepositoryProvider.validate_provider_config(provider, self.config_manager)
+        if not valid:
+            self.status_bar.setText(message)
+            return
+        context_key = RepositoryProvider.discovery_context_key(provider, provider_config)
+        selected_repo = self._selected_repo()
+        self.refresh_repos_btn.setEnabled(False)
+        self.status_bar.setText("Refreshing repositories...")
+
+        def on_result(repos):
+            self.config_manager.set_cached_discovered_repositories(provider, context_key, repos)
+            self.populate_repositories(selected_repo)
+            self.status_bar.setText(f"Found {len(repos)} repositories.")
+
+        def on_error(exc):
+            self.status_bar.setText(f"Repository discovery failed: {exc}")
+
+        def on_finished():
+            self.refresh_repos_btn.setEnabled(True)
+
+        if self.task_runner:
+            self.task_runner.run(
+                lambda: RepositoryProvider.discover_repositories(provider, provider_config),
+                description="Refresh review repositories", on_result=on_result,
+                on_error=on_error, on_finished=on_finished,
+            )
+        else:
+            try:
+                on_result(RepositoryProvider.discover_repositories(provider, provider_config))
+            except Exception as exc:
+                on_error(exc)
+            finally:
+                on_finished()
 
     def _selected_repo(self) -> Optional[dict[str, Any]]:
         data = self.repo_combo.currentData()
@@ -376,10 +499,30 @@ class PRReviewTab(QWidget):
             return
         repo = self._selected_repo()
         if repo:
+            self._clear_review()
+            self.populate_pull_requests([])
             self.load_repository_prs()
 
     def _on_filter_changed(self, index: int):
+        self._clear_review()
+        self.populate_pull_requests([])
         self.load_repository_prs()
+
+    def _clear_review(self):
+        self._review_request += 1
+        self._current_pr = None
+        self._current_repo = None
+        self._current_ci_status = None
+        self.title_label.setText("Select a pull request to review")
+        self.state_badge.setVisible(False)
+        self.branch_pill.setVisible(False)
+        self.author_lbl.setVisible(False)
+        self.web_btn.setEnabled(False)
+        self.approve_btn.setEnabled(False)
+        self.ci_badge.setText("CI Status: Not loaded")
+        self.ci_badge.setEnabled(False)
+        self.sidebar.set_files([])
+        self.diff_stream.clear()
 
     def populate_pull_requests(self, prs: list[dict[str, Any]]):
         """Populate the PR combo box with a list of pull requests."""
@@ -398,6 +541,10 @@ class PRReviewTab(QWidget):
             author_suffix = f" ({author})" if author else ""
             label = f"#{pr_id} · {title} [{state}]{author_suffix}"
             self.pr_combo.addItem(label, pr)
+            index = self.pr_combo.count() - 1
+            self.pr_combo.setItemData(index, " ".join(str(pr.get(key) or "") for key in (
+                "source_branch", "destination_branch", "repo_label", "description", "author_username",
+            )), Qt.UserRole + 1)
 
         self.pr_combo.blockSignals(False)
 
@@ -406,8 +553,7 @@ class PRReviewTab(QWidget):
             return
         pr_data = self.pr_combo.itemData(index)
         if isinstance(pr_data, dict):
-            repo = self._selected_repo()
-            self.load_pull_request(pr_data, repo)
+            self.load_pull_request(pr_data)
 
     def sync_prs(self, prs: list[dict[str, Any]]):
         """Sync pull requests loaded elsewhere (e.g. PR Lens) into the PR dropdown."""
@@ -415,22 +561,29 @@ class PRReviewTab(QWidget):
             return
         current_data = self.pr_combo.currentData()
         if not current_data or self.pr_combo.count() == 0:
+            repo = self._selected_repo()
+            if repo:
+                repo_id = str(repo.get("id") or "")
+                repo_label = self._repo_label(repo).lower()
+                prs = [pr for pr in prs if
+                       (not pr.get("repo_id") and not pr.get("repo_label"))
+                       or
+                       (repo_id and str(pr.get("repo_id") or "") == repo_id)
+                       or str(pr.get("repo_label") or "").lower() == repo_label]
             self.populate_pull_requests(prs)
 
     def on_tab_activated(self, prs: Optional[list[dict[str, Any]]] = None):
         """Called when the PR Review tab becomes active."""
-        if self.repo_combo.count() == 0 or self.repo_combo.currentData() is None:
-            self.populate_repositories()
+        self.populate_repositories(self.repo_combo.currentData())
 
         if prs and (self.pr_combo.count() == 0 or not self.pr_combo.currentData()):
-            self.populate_pull_requests(prs)
+            self.sync_prs(prs)
 
         # If no PR is currently loaded, try to load one
         if not self._current_pr:
             if self.pr_combo.count() > 0 and isinstance(self.pr_combo.itemData(0), dict):
                 first_pr = self.pr_combo.itemData(0)
-                repo = self._selected_repo()
-                self.load_pull_request(first_pr, repo)
+                self.load_pull_request(first_pr)
             elif self._selected_repo():
                 self.load_repository_prs()
 
@@ -442,6 +595,8 @@ class PRReviewTab(QWidget):
             return
 
         filter_mode = self.filter_combo.currentData() or "open"
+        self._pr_list_request += 1
+        request_id = self._pr_list_request
         repo_label = self._repo_label(repo)
         self.status_bar.setText(f"Loading {filter_mode} pull requests for {repo_label}...")
         self.load_prs_btn.setEnabled(False)
@@ -455,6 +610,8 @@ class PRReviewTab(QWidget):
             return records
 
         def _on_loaded(records: list[dict[str, Any]]):
+            if request_id != self._pr_list_request:
+                return
             self.load_prs_btn.setEnabled(True)
             self.load_prs_btn.setText("⟳ Load PRs")
             self.populate_pull_requests(records)
@@ -463,6 +620,8 @@ class PRReviewTab(QWidget):
                 self.load_pull_request(records[0], repo)
 
         def _on_error(exc: Exception):
+            if request_id != self._pr_list_request:
+                return
             self.load_prs_btn.setEnabled(True)
             self.load_prs_btn.setText("⟳ Load PRs")
             self.status_bar.setText(f"Failed to load PRs: {exc}")
@@ -484,8 +643,18 @@ class PRReviewTab(QWidget):
 
     def load_pull_request(self, pr_data: dict[str, Any], repo_data: Optional[dict[str, Any]] = None):
         """Load pull request details, diff, comments, and CI status."""
+        previous_key = self._approval_key() if self._current_pr and self._current_repo else None
+        self.sidebar.set_files([])
+        self.diff_stream.clear()
+        self._current_ci_status = None
+        self.ci_badge.setText("CI Status: Loading...")
+        self.ci_badge.setEnabled(False)
         self._current_pr = pr_data
         self._current_repo = repo_data or self._resolve_repo_from_pr(pr_data)
+        if previous_key != self._approval_key():
+            self.diff_stream.reset_viewed()
+        self._review_request += 1
+        request_id = self._review_request
 
         # Synchronize repo_combo if current_repo matches an item
         repo_id = str(self._current_repo.get("id") or "")
@@ -549,8 +718,9 @@ class PRReviewTab(QWidget):
             self.author_lbl.setText(f"by {author}")
             self.author_lbl.setVisible(True)
 
-        self.web_btn.setEnabled(bool(pr_data.get("links", {}).get("html", {}).get("href") or pr_data.get("html_url")))
-        self.approve_btn.setEnabled(True)
+        self.web_btn.setEnabled(bool(pr_data.get("link") or pr_data.get("html_url") or (pr_data.get("links") or {}).get("html", {}).get("href")))
+        self.approve_btn.setEnabled(state == "OPEN")
+        self._update_approve_button()
 
         # Asynchronously fetch diff, comments, and CI status
         self.status_bar.setText("Loading diff, comments, and CI status...")
@@ -560,8 +730,8 @@ class PRReviewTab(QWidget):
                 self._current_repo,
                 pr_data,
                 description=f"Load PR #{pr_id} Review",
-                on_result=self._on_review_data_loaded,
-                on_error=self._on_review_data_error,
+                on_result=lambda data: self._on_review_data_loaded(data) if request_id == self._review_request else None,
+                on_error=lambda error: self._on_review_data_error(error) if request_id == self._review_request else None,
             )
         else:
             try:
@@ -573,18 +743,30 @@ class PRReviewTab(QWidget):
     def _resolve_repo_from_pr(self, pr_data: dict[str, Any]) -> dict[str, Any]:
         repo_id = str(pr_data.get("repo_id") or "")
         repo_label = str(pr_data.get("repo_label") or "").lower()
+        pr_provider = str(pr_data.get("provider") or "").lower()
 
         # Check selected repositories first
         repos = []
         if hasattr(self.config_manager, "get_selected_repositories"):
             repos = self.config_manager.get_selected_repositories() or []
         for repo in repos:
+            if pr_provider and str(repo.get("provider") or "").lower() != pr_provider:
+                continue
             if repo_id and str(repo.get("id") or "") == repo_id:
                 return repo
             owner = str(repo.get("owner") or "").lower()
             slug = str(repo.get("slug") or repo.get("name") or repo.get("repo") or "").lower()
             if repo_label and repo_label == f"{owner}/{slug}".strip("/"):
                 return repo
+
+        # Prefer the PR's own repository when the configured selection has changed.
+        if repo_label or pr_data.get("slug"):
+            return {
+                "provider": pr_data.get("provider") or self.config_manager.get_provider(),
+                "owner": pr_data.get("owner") or (repo_label.split("/")[0] if "/" in repo_label else ""),
+                "slug": pr_data.get("slug") or (repo_label.split("/")[-1] if "/" in repo_label else ""),
+                "local_dir": pr_data.get("repo_local_dir") or "",
+            }
 
         # Check active repo from config
         if hasattr(self.config_manager, "get_active_repository"):
@@ -602,21 +784,19 @@ class PRReviewTab(QWidget):
     def _fetch_pr_review_data(self, repo: dict[str, Any], pr: dict[str, Any]) -> dict[str, Any]:
         repo_dir = (repo or {}).get("local_dir") or ""
         pr_id = str(pr.get("id") or "")
+        warnings: list[str] = []
 
-        # 1. Fetch Diff (try local git diff first, fallback to provider HTTP diff)
+        # The provider diff matches the exact PR even when the local checkout is stale.
         diff_text = ""
-        if repo_dir and os.path.isdir(repo_dir):
-            try:
-                res = self.diff_service.generate_pr_diff(pr, repo_dir)
-                diff_text = res.diff_text
-            except Exception:
-                diff_text = ""
-
-        if not diff_text:
-            try:
-                diff_text = self.pr_service.get_pull_request_diff_text(repo, pr_id)
-            except Exception:
-                diff_text = ""
+        try:
+            diff_text = self.pr_service.get_pull_request_diff_text(repo, pr_id)
+        except Exception as exc:
+            warnings.append(f"Provider diff: {exc}")
+            if repo_dir and os.path.isdir(repo_dir):
+                try:
+                    diff_text = self.diff_service.generate_pr_diff(pr, repo_dir).diff_text
+                except Exception as local_exc:
+                    warnings.append(f"Local diff: {local_exc}")
 
         # 2. Fetch Comments
         comments_result = {}
@@ -627,7 +807,8 @@ class PRReviewTab(QWidget):
                 unresolved_only=False,
                 include_code_context=False,
             )
-        except Exception:
+        except Exception as exc:
+            warnings.append(f"Comments: {exc}")
             comments_result = {"threads": [], "count": 0}
 
         # 3. Fetch CI Status
@@ -636,7 +817,8 @@ class PRReviewTab(QWidget):
         if commit_hash:
             try:
                 ci_status = self.pr_service.get_pull_request_statuses(repo, commit_hash)
-            except Exception:
+            except Exception as exc:
+                warnings.append(f"CI status: {exc}")
                 ci_status = {"state": "UNKNOWN", "total_count": 0, "statuses": []}
         else:
             ci_status = {"state": "UNKNOWN", "total_count": 0, "statuses": []}
@@ -645,6 +827,7 @@ class PRReviewTab(QWidget):
             "diff_text": diff_text,
             "comments": comments_result,
             "ci_status": ci_status,
+            "warnings": warnings,
         }
 
     def _on_review_data_loaded(self, data: dict[str, Any]):
@@ -655,16 +838,22 @@ class PRReviewTab(QWidget):
 
         # Group comments by file path
         comments_by_file: dict[str, list[dict[str, Any]]] = {}
+        general_comments: list[dict[str, Any]] = []
         for thread in comments_dict.get("threads", []):
             fp = thread.get("file_path") or ""
             if fp:
                 comments_by_file.setdefault(fp, []).append(thread)
+            else:
+                general_comments.append(thread)
 
         # Populate Diff Stream
-        file_summaries = self.diff_stream.set_diff_content(diff_text, comments_by_file)
+        file_summaries = self.diff_stream.set_diff_content(diff_text, comments_by_file, general_comments)
 
         # Populate Sidebar
         self.sidebar.set_files(file_summaries)
+        app = QApplication.instance()
+        if app and hasattr(self.config_manager, "get_theme"):
+            apply_theme(app, self.config_manager.get_theme())
 
         # Update CI Status Badge
         ci_state = ci_data.get("state", "UNKNOWN")
@@ -694,11 +883,14 @@ class PRReviewTab(QWidget):
             )
         self.ci_badge.setEnabled(bool(ci_data.get("statuses")))
 
-        total_threads = comments_dict.get("count", 0)
+        total_threads = (comments_dict.get("summary") or {}).get("total_threads", len(comments_dict.get("threads", [])))
+        warnings = data.get("warnings") or []
         if diff_text:
             self.status_bar.setText(f"Loaded {len(file_summaries)} changed file(s), {total_threads} review comment(s).")
         else:
             self.status_bar.setText(f"Diff is empty or could not be generated from repository ({total_threads} review comments).")
+        if warnings:
+            self.status_bar.setText(self.status_bar.text() + " " + " | ".join(warnings))
 
     def _on_review_data_error(self, error: Any):
         error_msg = str(error)
@@ -707,6 +899,48 @@ class PRReviewTab(QWidget):
 
     def _on_file_selected(self, file_path: str):
         self.diff_stream.scroll_to_file(file_path)
+
+    def _on_add_comment_requested(self, file_path: str, line: int, side: str):
+        if not self._current_pr or not self._current_repo:
+            return
+        side_label = "old" if side == "LEFT" else "new"
+        body, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Add inline review comment",
+            f"{file_path}:{line} ({side_label} side)\n\nComment:",
+        )
+        body = body.strip()
+        if not accepted or not body:
+            return
+
+        pr = self._current_pr
+        repo = self._current_repo
+        pr_id = str(pr.get("id") or "")
+        self.status_bar.setText(f"Posting comment on {file_path}:{line}...")
+
+        def post_comment():
+            return self.comment_service.add_comment(
+                repo, pr_id, body, file_path=file_path, line=line, side=side,
+            )
+
+        def on_result(_result):
+            if self._current_pr is pr:
+                self.status_bar.setText(f"Comment posted on {file_path}:{line}.")
+                self.load_pull_request(pr, repo)
+
+        def on_error(exc):
+            if self._current_pr is pr:
+                self.status_bar.setText(f"Could not post comment: {exc}")
+                QMessageBox.warning(self, "Comment Error", f"Could not post the inline comment:\n{exc}")
+
+        if self.task_runner:
+            self.task_runner.run(post_comment, description=f"Post comment on PR #{pr_id}",
+                                 on_result=on_result, on_error=on_error)
+        else:
+            try:
+                on_result(post_comment())
+            except Exception as exc:
+                on_error(exc)
 
     def _show_ci_dialog(self):
         if self._current_ci_status:
@@ -718,33 +952,94 @@ class PRReviewTab(QWidget):
             return
         url = (
             (self._current_pr.get("links") or {}).get("html", {}).get("href")
+            or self._current_pr.get("link")
             or self._current_pr.get("html_url")
         )
         if url:
             webbrowser.open(url)
+
+    def _approval_key(self):
+        repo = self._current_repo or {}
+        pr = self._current_pr or {}
+        return (str(repo.get("provider") or "").lower(),
+                str(repo.get("owner") or repo.get("workspace") or "").lower(),
+                str(repo.get("slug") or "").lower(), str(pr.get("id") or ""))
+
+    def _update_approve_button(self):
+        self.approve_btn.setText("↶ Unapprove PR" if self._approval_key() in self._approved_prs else "✓ Approve PR")
+
+    def _approval_feedback(self):
+        self._play_approval_chime()
+        previous = self.approve_btn.styleSheet()
+        self.approve_btn.setStyleSheet(previous + "QPushButton { border: 2px solid #bfdbfe; }")
+        QTimer.singleShot(700, lambda: self.approve_btn.setStyleSheet(previous))
+
+    def _play_approval_chime(self):
+        try:
+            from PyQt5.QtMultimedia import QSoundEffect
+            if not hasattr(self, "_approval_sound"):
+                self._approval_sound = QSoundEffect(self)
+                sound_path = os.path.join(os.path.dirname(__file__), "approval_chime.wav")
+                self._approval_sound.setSource(QUrl.fromLocalFile(sound_path))
+                self._approval_sound.setVolume(0.4)
+            self._approval_sound.play()
+        except (ImportError, RuntimeError, OSError):
+            QApplication.beep()
 
     def _on_approve_clicked(self):
         if not self._current_pr or not self._current_repo:
             return
         pr_id = str(self._current_pr.get("id") or "")
         title = self._current_pr.get("title") or ""
+        key = self._approval_key()
+        unapprove = key in self._approved_prs
+        comment = ""
+        if not unapprove:
+            comment, ok = QInputDialog.getText(
+                self, "Approve Pull Request",
+                f"Approve PR #{pr_id} ({title})?\n\nOptional approval note (or leave blank):",
+            )
+            if not ok:
+                return
 
-        comment, ok = QInputDialog.getText(
-            self,
-            "Approve Pull Request",
-            f"Approve PR #{pr_id} ({title})?\n\nOptional approval note (or leave blank):",
-        )
-        if not ok:
-            return
+        repo = self._current_repo
+        self.approve_btn.setEnabled(False)
+        self.status_bar.setText("Removing approval..." if unapprove else "Submitting PR approval...")
 
-        try:
-            self.status_bar.setText("Submitting PR approval...")
-            self.pr_service.approve_pull_request(self._current_repo, pr_id, comment=comment)
-            QMessageBox.information(self, "PR Approved", f"Successfully approved PR #{pr_id}!")
-            self.status_bar.setText(f"Approved PR #{pr_id}.")
-        except Exception as exc:
-            QMessageBox.critical(self, "Approval Error", f"Failed to approve PR #{pr_id}:\n{exc}")
-            self.status_bar.setText("Approval failed.")
+        def submit():
+            if unapprove:
+                return self.pr_service.unapprove_pull_request(repo, pr_id)
+            return self.pr_service.approve_pull_request(repo, pr_id, comment=comment)
+
+        def on_result(result):
+            if unapprove:
+                self._approved_prs.discard(key)
+                message = f"Removed approval for PR #{pr_id}."
+            else:
+                self._approved_prs.add(key)
+                message = f"Approved PR #{pr_id}."
+                if result.get("comment_error"):
+                    message += f" Approval note was not posted: {result['comment_error']}"
+            if self._approval_key() == key:
+                self.approve_btn.setEnabled(True)
+                self._update_approve_button()
+                self.status_bar.setText(message)
+                self._approval_feedback()
+
+        def on_error(exc):
+            if self._approval_key() == key:
+                self.approve_btn.setEnabled(True)
+                self.status_bar.setText(f"Approval action failed: {exc}")
+                QMessageBox.warning(self, "Approval Error", f"Could not update PR #{pr_id} approval:\n{exc}")
+
+        if self.task_runner:
+            self.task_runner.run(submit, description=f"Update PR #{pr_id} approval",
+                                 on_result=on_result, on_error=on_error)
+        else:
+            try:
+                on_result(submit())
+            except Exception as exc:
+                on_error(exc)
 
     def _on_reply_submitted(self, parent_comment_id: str, reply_body: str):
         if not self._current_pr or not self._current_repo:

@@ -31,6 +31,7 @@ class DiffFile:
     hunks: list[DiffHunk] = field(default_factory=list)
     additions: int = 0
     deletions: int = 0
+    raw_lines: list[str] = field(default_factory=list)
 
     @property
     def display_path(self) -> str:
@@ -73,6 +74,7 @@ def parse_unified_diff(diff_text: str) -> list[DiffFile]:
                 old_path=old_p,
                 new_path=new_p,
                 change_type="M",
+                raw_lines=[line],
             )
             i += 1
             continue
@@ -80,6 +82,7 @@ def parse_unified_diff(diff_text: str) -> list[DiffFile]:
         if not current_file:
             i += 1
             continue
+        current_file.raw_lines.append(line)
 
         # File metadata lines
         if line.startswith("new file mode"):

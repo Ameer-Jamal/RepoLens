@@ -1241,23 +1241,28 @@ class BitbucketProviderClient(ProviderClient):
         response = requests.post(url, auth=(username, password), timeout=20)
         response.raise_for_status()
         comment_data = None
+        comment_error = None
         if comment and comment.strip():
             comment_url = (
                 f"https://api.bitbucket.org/2.0/repositories/"
                 f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/comments"
             )
-            c_resp = requests.post(
-                comment_url,
-                auth=(username, password),
-                json={"content": {"raw": comment.strip()}},
-                timeout=20,
-            )
-            if c_resp.ok:
+            try:
+                c_resp = requests.post(
+                    comment_url,
+                    auth=(username, password),
+                    json={"content": {"raw": comment.strip()}},
+                    timeout=20,
+                )
+                c_resp.raise_for_status()
                 comment_data = c_resp.json()
+            except Exception as exc:
+                comment_error = str(exc)
         return {
             "approved": True,
             "pr_id": str(pr_id),
             "comment": comment_data,
+            "comment_error": comment_error,
         }
 
     def unapprove_pull_request(
@@ -1288,28 +1293,32 @@ class BitbucketProviderClient(ProviderClient):
             f"https://api.bitbucket.org/2.0/repositories/"
             f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/request-changes"
         )
-        # Attempt request-changes endpoint
-        try:
-            requests.post(url, auth=(username, password), timeout=20)
-        except Exception:
-            pass
+        response = requests.post(url, auth=(username, password), timeout=20)
+        response.raise_for_status()
 
         # Post review comment
         comment_url = (
             f"https://api.bitbucket.org/2.0/repositories/"
             f"{repository.workspace}/{repository.slug}/pullrequests/{pr_id}/comments"
         )
-        c_resp = requests.post(
-            comment_url,
-            auth=(username, password),
-            json={"content": {"raw": f"**Changes Requested**\n\n{comment.strip()}"}},
-            timeout=20,
-        )
-        c_resp.raise_for_status()
+        comment_error = None
+        try:
+            c_resp = requests.post(
+                comment_url,
+                auth=(username, password),
+                json={"content": {"raw": f"**Changes Requested**\n\n{comment.strip()}"}},
+                timeout=20,
+            )
+            c_resp.raise_for_status()
+            comment_data = c_resp.json()
+        except Exception as exc:
+            comment_error = str(exc)
+            comment_data = None
         return {
             "changes_requested": True,
             "pr_id": str(pr_id),
-            "comment": c_resp.json(),
+            "comment": comment_data,
+            "comment_error": comment_error,
         }
 
     def get_file_content(
@@ -1869,15 +1878,16 @@ class GitHubProviderClient(ProviderClient):
         repository: RepositoryRef,
         pr_id: str | int,
     ) -> dict:
+        current_user = self.validate_credentials().username.lower()
         reviews_url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}/reviews"
-        response = requests.get(reviews_url, headers=self._headers(), timeout=20)
+        response = requests.get(reviews_url, headers=self._headers(), params={"per_page": 100}, timeout=20)
         response.raise_for_status()
-        reviews = response.json() if isinstance(response.json(), list) else []
-        current_user = (self.config.get_github_owner() or "").lower()
+        payload = response.json()
+        reviews = payload if isinstance(payload, list) else []
         dismissed_count = 0
         for r in reviews:
             user_login = ((r.get("user") or {}).get("login") or "").lower()
-            if r.get("state") == "APPROVED" and (not current_user or user_login == current_user):
+            if r.get("state") == "APPROVED" and user_login == current_user:
                 review_id = r.get("id")
                 dismiss_url = f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/pulls/{pr_id}/reviews/{review_id}/dismissals"
                 d_resp = requests.put(
@@ -1886,8 +1896,10 @@ class GitHubProviderClient(ProviderClient):
                     json={"message": "Approval dismissed via RepoLens"},
                     timeout=20,
                 )
-                if d_resp.ok:
-                    dismissed_count += 1
+                d_resp.raise_for_status()
+                dismissed_count += 1
+        if dismissed_count == 0:
+            raise ValueError(f"No approval by {current_user} was found on PR #{pr_id}.")
         return {
             "approved": False,
             "pr_id": str(pr_id),

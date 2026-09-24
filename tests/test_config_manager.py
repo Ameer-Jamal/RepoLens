@@ -60,6 +60,18 @@ class ConfigManagerTests(unittest.TestCase):
         cfg.set_copy_to_clipboard(False)
         self.assertFalse(cfg.get_copy_to_clipboard())
 
+    def test_theme_roundtrip(self):
+        cfg = TestConfigManager()
+        self.assertEqual(cfg.get_theme(), "Midnight")
+        cfg.set_theme("Aurora")
+        self.assertEqual(cfg.get_theme(), "Aurora")
+        cfg.set_theme("Forest")
+        self.assertEqual(cfg.get_theme(), "Forest")
+        cfg.set_theme("Classic")
+        self.assertEqual(cfg.get_theme(), "Classic")
+        with self.assertRaises(ValueError):
+            cfg.set_theme("unknown")
+
     def test_copy_open_ai_roundtrip(self):
         cfg = TestConfigManager()
         self.assertFalse(cfg.get_copy_open_ai())  # Default should be False

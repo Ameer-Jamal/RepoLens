@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 datas = [
     ('repolens_default_config.json', '.'),
+    ('ui/approval_chime.wav', 'ui'),
 ]
 
 hiddenimports = [
@@ -10,6 +11,7 @@ hiddenimports = [
     'PyQt5.QtCore',
     'PyQt5.QtGui',
     'PyQt5.QtWidgets',
+    'PyQt5.QtMultimedia',
     'pygments',
     'pygments.lexers',
     'pygments.formatters',

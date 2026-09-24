@@ -21,11 +21,15 @@ class PRCommentCardWidget(QFrame):
     replySubmitted = pyqtSignal(str, str)   # (parent_comment_id, reply_body)
     resolveToggled = pyqtSignal(str, bool)  # (comment_id, unresolve)
 
-    def __init__(self, thread_data: dict[str, Any], parent=None):
+    def __init__(self, thread_data: dict[str, Any], parent=None, typography=None):
         super().__init__(parent)
         self.thread_data = thread_data
-        self._is_resolved = bool(thread_data.get("is_resolved", False))
-        self.root_comment_id = str(thread_data.get("comment_id") or "")
+        self.typography = typography
+        self._font_size = typography.font_size if typography is not None else 13
+        self._reply_labels: list[tuple[QLabel, QLabel, QLabel]] = []
+        root = thread_data.get("root_comment") or thread_data
+        self._is_resolved = bool(thread_data.get("resolved", thread_data.get("is_resolved", False)))
+        self.root_comment_id = str(root.get("id") or thread_data.get("comment_id") or "")
 
         self.setFrameShape(QFrame.StyledPanel)
         self._update_card_style()
@@ -38,7 +42,7 @@ class PRCommentCardWidget(QFrame):
         header = QHBoxLayout()
         header.setSpacing(8)
 
-        author_name = thread_data.get("author_display") or thread_data.get("author") or "Developer"
+        author_name = root.get("author_display_name") or root.get("author_display") or root.get("author") or "Developer"
         initial = (author_name[0] if author_name else "D").upper()
 
         self.avatar_label = QLabel(initial, self)
@@ -51,7 +55,7 @@ class PRCommentCardWidget(QFrame):
         self.author_label = QLabel(author_name, self)
         self.author_label.setStyleSheet("color: #f1f5f9; font-weight: 600; font-size: 12px;")
 
-        time_str = str(thread_data.get("created_on") or "")[:16].replace("T", " ")
+        time_str = str(root.get("created_at") or root.get("created_on") or "")[:16].replace("T", " ")
         self.time_label = QLabel(time_str, self)
         self.time_label.setStyleSheet("color: #64748b; font-size: 11px;")
 
@@ -66,7 +70,7 @@ class PRCommentCardWidget(QFrame):
         self.main_layout.addLayout(header)
 
         # Body
-        body_text = thread_data.get("body") or ""
+        body_text = root.get("body") or ""
         self.body_label = QLabel(body_text, self)
         self.body_label.setWordWrap(True)
         self.body_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -109,7 +113,7 @@ class PRCommentCardWidget(QFrame):
         self.reply_container = QWidget(self)
         reply_box_layout = QVBoxLayout(self.reply_container)
         reply_box_layout.setContentsMargins(0, 4, 0, 0)
-        reply_box_layout.setSpacing(4)
+        reply_box_layout.setSpacing(8)
 
         self.reply_input = QTextEdit(self.reply_container)
         self.reply_input.setPlaceholderText("Write a reply... (Keep it natural and direct)")
@@ -128,28 +132,32 @@ class PRCommentCardWidget(QFrame):
         reply_box_layout.addWidget(self.reply_input)
 
         reply_buttons = QHBoxLayout()
+        reply_buttons.setSpacing(12)
         reply_buttons.addStretch()
 
-        cancel_reply_btn = QPushButton("Cancel", self.reply_container)
-        cancel_reply_btn.setStyleSheet(
-            "QPushButton { background-color: #262a33; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
+        self.cancel_reply_btn = QPushButton("Cancel", self.reply_container)
+        self.cancel_reply_btn.setStyleSheet(
+            "QPushButton { background-color: #262a33; color: #cbd5e1; border: 1px solid #475569; border-radius: 4px; padding: 6px 12px; min-width: 72px; font-size: 11px; }"
             "QPushButton:hover { background-color: #333a46; }"
         )
-        cancel_reply_btn.clicked.connect(self._toggle_reply_box)
+        self.cancel_reply_btn.clicked.connect(self._toggle_reply_box)
 
-        submit_reply_btn = QPushButton("Post Reply", self.reply_container)
-        submit_reply_btn.setStyleSheet(
-            "QPushButton { background-color: #2563eb; color: white; border: none; border-radius: 4px; padding: 3px 10px; font-size: 11px; font-weight: 600; }"
+        self.submit_reply_btn = QPushButton("Post Reply", self.reply_container)
+        self.submit_reply_btn.setStyleSheet(
+            "QPushButton { background-color: #2563eb; color: white; border: none; border-radius: 4px; padding: 6px 12px; min-width: 88px; font-size: 11px; font-weight: 600; }"
             "QPushButton:hover { background-color: #1d4ed8; }"
         )
-        submit_reply_btn.clicked.connect(self._on_submit_reply)
+        self.submit_reply_btn.clicked.connect(self._on_submit_reply)
 
-        reply_buttons.addWidget(cancel_reply_btn)
-        reply_buttons.addWidget(submit_reply_btn)
+        reply_buttons.addWidget(self.cancel_reply_btn)
+        reply_buttons.addWidget(self.submit_reply_btn)
         reply_box_layout.addLayout(reply_buttons)
 
         self.reply_container.setVisible(False)
         self.main_layout.addWidget(self.reply_container)
+        if typography is not None:
+            typography.fontSizeChanged.connect(self.set_font_size)
+            self.set_font_size(typography.font_size)
 
     def _update_card_style(self):
         if self._is_resolved:
@@ -186,16 +194,17 @@ class PRCommentCardWidget(QFrame):
             )
 
     def _update_resolve_button(self):
+        button_size = max(10, self._font_size - 2)
         if self._is_resolved:
             self.resolve_btn.setText("Reopen Thread")
             self.resolve_btn.setStyleSheet(
-                "QPushButton { background-color: transparent; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+                f"QPushButton {{ background-color: transparent; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font-size: {button_size}px; }}"
                 "QPushButton:hover { background-color: #272f3d; color: #e2e8f0; }"
             )
         else:
             self.resolve_btn.setText("✓ Resolve Thread")
             self.resolve_btn.setStyleSheet(
-                "QPushButton { background-color: #064e3b; color: #34d399; border: 1px solid #059669; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }"
+                f"QPushButton {{ background-color: #064e3b; color: #34d399; border: 1px solid #059669; border-radius: 4px; padding: 3px 8px; font-size: {button_size}px; font-weight: 600; }}"
                 "QPushButton:hover { background-color: #047857; }"
             )
 
@@ -206,8 +215,8 @@ class PRCommentCardWidget(QFrame):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(2)
 
-        r_author = reply.get("author_display") or reply.get("author") or "Developer"
-        r_time = str(reply.get("created_on") or "")[:16].replace("T", " ")
+        r_author = reply.get("author_display_name") or reply.get("author_display") or reply.get("author") or "Developer"
+        r_time = str(reply.get("created_at") or reply.get("created_on") or "")[:16].replace("T", " ")
 
         r_header = QHBoxLayout()
         r_author_lbl = QLabel(r_author, reply_box)
@@ -224,6 +233,8 @@ class PRCommentCardWidget(QFrame):
         r_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
         r_body.setStyleSheet("color: #e2e8f0; font-size: 11px;")
         layout.addWidget(r_body)
+
+        self._reply_labels.append((r_author_lbl, r_time_lbl, r_body))
 
         self.main_layout.addWidget(reply_box)
 
@@ -248,3 +259,35 @@ class PRCommentCardWidget(QFrame):
         self._update_card_style()
         self._update_status_badge()
         self._update_resolve_button()
+
+    def set_font_size(self, size: int):
+        self._font_size = size
+        small = max(10, size - 2)
+        tiny = max(9, size - 3)
+        self.author_label.setStyleSheet(f"color: #f1f5f9; font-weight: 600; font-size: {small}px;")
+        self.time_label.setStyleSheet(f"color: #94a3b8; font-size: {tiny}px;")
+        self.body_label.setStyleSheet(f"color: #e2e8f0; font-size: {size}px; padding: 2px 0;")
+        self.reply_input.setStyleSheet(
+            f"QTextEdit {{ background-color: #12141a; border: 1px solid #334155; border-radius: 4px; "
+            f"color: #f1f5f9; font-size: {size}px; padding: 6px; }}"
+            "QTextEdit:focus { border-color: #3b82f6; }"
+        )
+        self.reply_input.setFixedHeight(max(70, size * 4))
+        self.reply_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: #93c5fd; border: none; "
+            f"font-size: {small}px; font-weight: 600; padding: 4px 8px; }}"
+            "QPushButton:hover { color: #bfdbfe; }"
+        )
+        self.cancel_reply_btn.setStyleSheet(
+            f"QPushButton {{ background: #262a33; color: #cbd5e1; border: 1px solid #475569; "
+            f"border-radius: 4px; padding: 6px 12px; min-width: 72px; font-size: {small}px; }}"
+        )
+        self.submit_reply_btn.setStyleSheet(
+            f"QPushButton {{ background: #2563eb; color: white; border: none; border-radius: 4px; "
+            f"padding: 6px 12px; min-width: 88px; font-weight: 600; font-size: {small}px; }}"
+        )
+        self._update_resolve_button()
+        for author, time_label, body in self._reply_labels:
+            author.setStyleSheet(f"color: #cbd5e1; font-weight: 600; font-size: {small}px;")
+            time_label.setStyleSheet(f"color: #94a3b8; font-size: {tiny}px;")
+            body.setStyleSheet(f"color: #e2e8f0; font-size: {size}px;")

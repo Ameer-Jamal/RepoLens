@@ -60,7 +60,11 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
             VERSION="${TAG#v}"
             echo "Triggered by tag push: $TAG ($VERSION)"
-            python .github/scripts/bump_version.py --set-version "$VERSION"
+            SOURCE_VERSION=$(grep -m1 '^version =' pyproject.toml | cut -d '"' -f2)
+            if [ "$SOURCE_VERSION" != "$VERSION" ]; then
+              echo "Tag $TAG contains package version $SOURCE_VERSION. Bump and commit version files before tagging."
+              exit 1
+            fi
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "tag=$TAG" >> $GITHUB_OUTPUT
           else
@@ -89,15 +93,48 @@ jobs:
               git push origin HEAD:${{ github.ref_name }}
             fi
             
-            if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+                echo "Tag $TAG already points to a different commit. Choose a new version."
+                exit 1
+              fi
+            else
               git tag "$TAG"
               git push origin "$TAG"
             fi
           fi
 
+  test-release:
+    name: Test release source
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1-mesa-dev libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0
+
+      - name: Install and test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pip install -e .[dev]
+          pytest tests/ -q
+
   build-wheels:
     name: Build Python Package (sdist & wheel)
-    needs: prepare-release
+    needs: [prepare-release, test-release]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -109,6 +146,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Sync package version with release tag
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        shell: bash
+        run: python .github/scripts/bump_version.py --set-version "$RELEASE_VERSION"
 
       - name: Install build tool
         run: |
@@ -132,7 +175,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop App (${{ matrix.os }})
-    needs: prepare-release
+    needs: [prepare-release, test-release]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -155,6 +198,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Sync app version with release tag
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        shell: bash
+        run: python .github/scripts/bump_version.py --set-version "$RELEASE_VERSION"
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'

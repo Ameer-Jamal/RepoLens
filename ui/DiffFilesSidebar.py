@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen
 from PyQt5.QtWidgets import (
     QWidget,
@@ -20,6 +20,10 @@ from PyQt5.QtWidgets import (
 
 class FileItemDelegate(QStyledItemDelegate):
     """Custom painter for file list items with status badge, change pill, and comment count."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.font_size = 12
 
     def paint(self, painter: QPainter, option, index):
         data = index.data(Qt.UserRole) or {}
@@ -59,7 +63,7 @@ class FileItemDelegate(QStyledItemDelegate):
             "A": (QColor("#064e3b"), QColor("#34d399")),  # green
             "D": (QColor("#4c0519"), QColor("#fb7185")),  # red
             "R": (QColor("#1e1b4b"), QColor("#818cf8")),  # indigo
-            "M": (QColor("#451a03"), QColor("#fbbf24")),  # amber
+            "M": (QColor("#172554"), QColor("#93c5fd")),  # blue
         }
         badge_bg, badge_fg = badge_colors.get(change_type, (QColor("#334155"), QColor("#94a3b8")))
 
@@ -75,7 +79,7 @@ class FileItemDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(badge_rect, 4, 4)
 
         font = painter.font()
-        font.setPointSize(9)
+        font.setPointSize(max(9, self.font_size - 3))
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(badge_fg)
@@ -104,7 +108,7 @@ class FileItemDelegate(QStyledItemDelegate):
         # Diff stats (+N -N)
         if additions > 0 or deletions > 0:
             stats_font = QFont(font)
-            stats_font.setPointSize(9)
+            stats_font.setPointSize(max(9, self.font_size - 3))
             stats_font.setBold(False)
             painter.setFont(stats_font)
 
@@ -130,7 +134,7 @@ class FileItemDelegate(QStyledItemDelegate):
         dirname = os.path.dirname(path)
 
         path_font = QFont(font)
-        path_font.setPointSize(10)
+        path_font.setPointSize(max(10, self.font_size - 2))
         path_font.setBold(is_selected)
         painter.setFont(path_font)
 
@@ -149,7 +153,7 @@ class FileItemDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
-        return option.rect.size().expandedTo(Qt.QSize(200, 32))
+        return QSize(200, max(38, self.font_size + 26))
 
 
 class DiffFilesSidebar(QWidget):
@@ -160,6 +164,7 @@ class DiffFilesSidebar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._files: list[dict[str, Any]] = []
+        self._font_size = 12
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -207,6 +212,7 @@ class DiffFilesSidebar(QWidget):
             "QListWidget::item { border: none; margin-bottom: 2px; }"
         )
         self.list_widget.setItemDelegate(FileItemDelegate(self.list_widget))
+        self.list_widget.setSpacing(3)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.list_widget)
 
@@ -229,9 +235,21 @@ class DiffFilesSidebar(QWidget):
     def _populate_list(self, files: list[dict[str, Any]]) -> None:
         self.list_widget.clear()
         for f in files:
-            item = QListWidgetItem()
+            item = QListWidgetItem(f.get("path") or "")
             item.setData(Qt.UserRole, f)
+            item.setToolTip(f.get("path") or "")
+            item.setSizeHint(QSize(200, max(38, self._font_size + 26)))
             self.list_widget.addItem(item)
+
+    def set_font_size(self, size: int):
+        self._font_size = size
+        self.list_widget.itemDelegate().font_size = size
+        self.title_label.setStyleSheet(f"color: #94a3b8; font-weight: 700; font-size: {max(11, size - 2)}px;")
+        self.stats_label.setStyleSheet(f"color: #94a3b8; font-size: {max(10, size - 2)}px;")
+        for index in range(self.list_widget.count()):
+            self.list_widget.item(index).setSizeHint(QSize(200, max(38, size + 26)))
+        self.list_widget.doItemsLayout()
+        self.list_widget.viewport().update()
 
     def _apply_filter(self, query: str) -> None:
         query = (query or "").strip().lower()
