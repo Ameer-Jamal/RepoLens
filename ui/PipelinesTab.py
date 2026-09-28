@@ -111,7 +111,17 @@ class PipelinesTab(QWidget):
         row.addWidget(self.run_btn)
         row.addStretch()
         launcher_layout.addLayout(row)
-        note = QLabel("Use provider-managed secrets for sensitive values. Parameters entered here are not saved.", self)
+        preference_row = QHBoxLayout()
+        self.remember_values = QCheckBox("Remember values for this pipeline and branch", self)
+        self.remember_values.setChecked(False)
+        preference_row.addWidget(self.remember_values)
+        self.forget_values_btn = QPushButton("Forget saved values", self)
+        self.forget_values_btn.clicked.connect(self._forget_values)
+        self.forget_values_btn.setEnabled(False)
+        preference_row.addWidget(self.forget_values_btn)
+        preference_row.addStretch()
+        launcher_layout.addLayout(preference_row)
+        note = QLabel("Use provider-managed secrets for sensitive values. Remembered values are stored locally in RepoLens settings.", self)
         note.setWordWrap(True)
         launcher_layout.addWidget(note)
         layout.addWidget(launcher)
@@ -324,13 +334,43 @@ class PipelinesTab(QWidget):
         self.refresh_runs()
 
     def _pipeline_changed(self, *_):
-        self.parameters.setRowCount(0)
         pipeline = self.pipeline_combo.currentData() or {}
-        for field in pipeline.get("inputs", []):
-            self._add_parameter(field.get("name") or "", field.get("default"), field)
+        self._load_parameter_form()
         self.add_param_btn.setEnabled(pipeline.get("kind") == "custom")
         self.run_btn.setEnabled(bool(pipeline) and not self._loading)
         self.refresh_runs()
+
+    def _load_parameter_form(self):
+        self.parameters.setRowCount(0)
+        repo = self.repo_combo.currentData()
+        branch = self.branch_combo.currentData()
+        pipeline = self.pipeline_combo.currentData() or {}
+        saved = self.config.get_pipeline_parameters(repo, branch, pipeline["id"]) if repo and branch and pipeline else {}
+        known = set()
+        for field in pipeline.get("inputs", []):
+            name = field.get("name") or ""
+            if not name:
+                continue
+            known.add(name)
+            value = saved.get(name, field.get("default"))
+            if field.get("options") and value not in field["options"]:
+                value = field.get("default")
+            self._add_parameter(name, value, field)
+        if pipeline.get("kind") == "custom":
+            for name, value in saved.items():
+                if name not in known:
+                    self._add_parameter(name, value)
+        self.remember_values.setChecked(bool(saved))
+        self.remember_values.setEnabled(bool(pipeline))
+        self.forget_values_btn.setEnabled(bool(saved))
+
+    def _forget_values(self):
+        repo = self.repo_combo.currentData()
+        branch = self.branch_combo.currentData()
+        pipeline = self.pipeline_combo.currentData()
+        if repo and branch and pipeline:
+            self.config.clear_pipeline_parameters(repo, branch, pipeline["id"])
+            self._load_parameter_form()
 
     def _add_parameter(self, name, value, field=None):
         row = self.parameters.rowCount()
@@ -385,8 +425,15 @@ class PipelinesTab(QWidget):
             summary += "\n\nParameters:\n" + "\n".join(f"{k} = {v}" for k, v in values.items())
         if QMessageBox.question(self, "Review pipeline run", summary, QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
+        remember = self.remember_values.isChecked()
         self._set_status("Starting pipeline...", busy=True)
         def launched(result):
+            if remember:
+                self.config.set_pipeline_parameters(repo, branch, pipeline["id"], values)
+                if (self._repo_key(self.repo_combo.currentData()) == self._repo_key(repo)
+                        and self.branch_combo.currentData() == branch
+                        and (self.pipeline_combo.currentData() or {}).get("id") == pipeline["id"]):
+                    self.forget_values_btn.setEnabled(bool(values))
             self._set_status(f"Pipeline started. Run ID: {result['run_id'] or 'pending'}")
             if result["run_id"]:
                 self._current_run = result["run_id"]

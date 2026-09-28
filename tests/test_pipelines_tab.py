@@ -17,11 +17,26 @@ PIPELINE = {"id": "7", "name": "Tests", "kind": "workflow", "inputs": [
 
 
 class Config:
+    def __init__(self):
+        self.saved = {}
+
     def get_selected_repositories(self):
         return [REPO]
 
     def get_active_repository(self):
         return REPO
+
+    def _key(self, repo, branch, pipeline_id):
+        return (repo["provider"], repo["owner"], repo["slug"], branch, pipeline_id)
+
+    def get_pipeline_parameters(self, repo, branch, pipeline_id):
+        return dict(self.saved.get(self._key(repo, branch, pipeline_id), {}))
+
+    def set_pipeline_parameters(self, repo, branch, pipeline_id, values):
+        self.saved[self._key(repo, branch, pipeline_id)] = dict(values)
+
+    def clear_pipeline_parameters(self, repo, branch, pipeline_id):
+        self.saved.pop(self._key(repo, branch, pipeline_id), None)
 
 
 class InlineRunner:
@@ -50,6 +65,7 @@ class DeferredRunner:
 
 class PipelinesTabTests(unittest.TestCase):
     def setUp(self):
+        self.config = Config()
         self.service = Mock()
         self.service.list_branches.return_value = ["main", "feature/test"]
         self.service.list_pipelines.return_value = [PIPELINE]
@@ -61,7 +77,7 @@ class PipelinesTabTests(unittest.TestCase):
                                                                                              "status": "completed", "conclusion": "success"}]}
         self.service.get_log.return_value = {"text": "tests passed", "truncated": False}
         with patch("ui.PipelinesTab.PipelineService", return_value=self.service):
-            self.tab = PipelinesTab(Config(), InlineRunner())
+            self.tab = PipelinesTab(self.config, InlineRunner())
 
     def test_form_updates_and_dispatches_reviewed_values(self):
         self.assertEqual(self.tab.branch_combo.currentText(), "main")
@@ -84,6 +100,68 @@ class PipelinesTabTests(unittest.TestCase):
         with patch.object(QMessageBox, "question", return_value=QMessageBox.No):
             self.tab.run_pipeline()
         self.service.run_pipeline.assert_not_called()
+
+    def test_remember_values_after_success_and_forget(self):
+        self.tab.parameters.cellWidget(0, 1).setCurrentText("full")
+        self.tab.remember_values.setChecked(True)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            self.tab.run_pipeline()
+        self.assertEqual(self.config.get_pipeline_parameters(REPO, "main", "7"), {"suite": "full"})
+        with patch("ui.PipelinesTab.PipelineService", return_value=self.service):
+            reopened = PipelinesTab(self.config, InlineRunner())
+        self.assertEqual(reopened.parameters.cellWidget(0, 1).currentText(), "full")
+        self.assertTrue(reopened.remember_values.isChecked())
+        reopened._forget_values()
+        self.assertEqual(self.config.get_pipeline_parameters(REPO, "main", "7"), {})
+        self.assertEqual(reopened.parameters.cellWidget(0, 1).currentText(), "smoke")
+
+    def test_remember_choice_is_captured_when_dispatch_starts(self):
+        runner = DeferredRunner()
+        self.tab.runner = runner
+        self.tab.remember_values.setChecked(True)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            self.tab.run_pipeline()
+        self.tab.remember_values.setChecked(False)
+        dispatch = next(call for call in runner.calls if call[0] is self.service.run_pipeline)
+        dispatch[2]["on_result"]({"run_id": "99", "url": "https://github.com/run"})
+        self.assertEqual(self.config.get_pipeline_parameters(REPO, "main", "7"), {"suite": "smoke"})
+
+    def test_values_not_saved_when_run_fails_or_remember_is_off(self):
+        self.tab.parameters.cellWidget(0, 1).setCurrentText("full")
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            self.tab.run_pipeline()
+        self.assertEqual(self.config.get_pipeline_parameters(REPO, "main", "7"), {})
+        self.service.run_pipeline.side_effect = RuntimeError("dispatch failed")
+        self.tab.remember_values.setChecked(True)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes), patch.object(QMessageBox, "warning"):
+            self.tab.run_pipeline()
+        self.assertEqual(self.config.get_pipeline_parameters(REPO, "main", "7"), {})
+
+    def test_bitbucket_manual_variables_are_restored(self):
+        repo = {"provider": "bitbucket", "owner": "team", "slug": "automation", "default_branch": "develop"}
+        custom = {"id": "regression", "name": "Regression", "kind": "custom", "inputs": [
+            {"name": "suite", "default": "smoke", "type": "string"}]}
+        class BitbucketConfig(Config):
+            def get_selected_repositories(self):
+                return [repo]
+
+            def get_active_repository(self):
+                return repo
+
+        config = BitbucketConfig()
+        self.service.list_branches.return_value = ["develop"]
+        self.service.list_pipelines.return_value = [custom]
+        with patch("ui.PipelinesTab.PipelineService", return_value=self.service):
+            tab = PipelinesTab(config, InlineRunner())
+        tab._add_parameter("environment", "qa")
+        tab.remember_values.setChecked(True)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            tab.run_pipeline()
+        with patch("ui.PipelinesTab.PipelineService", return_value=self.service):
+            reopened = PipelinesTab(config, InlineRunner())
+        self.assertEqual(reopened.parameters.rowCount(), 2)
+        self.assertEqual(reopened.parameters.item(1, 0).text(), "environment")
+        self.assertEqual(reopened.parameters.cellWidget(1, 1).text(), "qa")
 
     def test_searchable_controls_and_visible_error_recovery(self):
         self.assertIsInstance(self.tab.repo_combo, SearchableComboBox)
@@ -115,6 +193,9 @@ class PipelinesTabTests(unittest.TestCase):
             def get_github_owner(self):
                 return ""
 
+            def get_pipeline_parameters(self, repo, branch, pipeline_id):
+                return {}
+
         with patch("ui.PipelinesTab.PipelineService", return_value=self.service), patch(
             "ui.PipelinesTab.RepositoryProvider.discover_repositories", return_value=[REPO]
         ) as discover:
@@ -125,7 +206,7 @@ class PipelinesTabTests(unittest.TestCase):
     def test_default_branch_pipelines_load_without_waiting_for_branch_list(self):
         runner = DeferredRunner()
         with patch("ui.PipelinesTab.PipelineService", return_value=self.service):
-            tab = PipelinesTab(Config(), runner)
+            tab = PipelinesTab(self.config, runner)
         self.assertEqual(tab.branch_combo.currentData(), "main")
         branch_call = next(call for call in runner.calls if call[0] is self.service.list_branches)
         pipeline_call = next(call for call in runner.calls if call[0] is self.service.list_pipelines)

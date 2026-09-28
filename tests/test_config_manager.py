@@ -44,6 +44,18 @@ class ConfigManagerTests(unittest.TestCase):
         self.assertEqual(cached, repos)
         self.assertGreater(ts, 0.0)
 
+    def test_pipeline_parameters_are_scoped_and_can_be_forgotten(self):
+        cfg = TestConfigManager()
+        repo = {"provider": "bitbucket", "owner": "team", "slug": "tests"}
+        other = {"provider": "bitbucket", "owner": "team", "slug": "other"}
+        cfg.set_pipeline_parameters(repo, "develop", "regression", {"suite": "smoke"})
+        reloaded = TestConfigManager()
+        self.assertEqual(reloaded.get_pipeline_parameters(repo, "develop", "regression"), {"suite": "smoke"})
+        self.assertEqual(reloaded.get_pipeline_parameters(repo, "main", "regression"), {})
+        self.assertEqual(reloaded.get_pipeline_parameters(other, "develop", "regression"), {})
+        reloaded.clear_pipeline_parameters(repo, "develop", "regression")
+        self.assertEqual(cfg.get_pipeline_parameters(repo, "develop", "regression"), {})
+
     def test_open_in_editor_roundtrip(self):
         cfg = TestConfigManager()
         self.assertTrue(cfg.get_open_in_editor())  # Default should be True

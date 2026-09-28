@@ -94,7 +94,7 @@ python3 main.py
 
    - `PR Lens`: list/search PRs, filter by developer, open in PR Review, and generate PR or commit diffs.
    - `PR Review`: dedicated in-app code review tab with syntax-highlighted diffs, typography font scaling, changed files navigation, live CI status, and interactive inline comment threading & resolution.
-   - `Pipelines`: choose a repository, remote branch, and runnable pipeline or workflow; review parameters before starting a run, then inspect recent runs and logs. PR Review can preselect a PR's repository and source branch.
+   - `Pipelines`: choose a repository, remote branch, and runnable pipeline or workflow; review parameters before starting a run, then inspect recent runs and logs. PR Review can preselect a PR's repository and source branch. Check **Remember values** to reuse ordinary parameters for that repository, branch, and pipeline after a successful dispatch; **Forget saved values** clears them.
    - `Branch Commit Viewer`: inspect branch commits.
    - `Create PR`: create pull requests from configured repositories.
    - `Contribution History`: reconstruct work by developer, repository, branch, and date.
