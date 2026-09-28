@@ -1335,7 +1335,12 @@ class BitbucketProviderClient(ProviderClient):
         )
         response = requests.get(url, auth=(username, password), timeout=25)
         response.raise_for_status()
-        return response.text
+        # Bitbucket serves source files as text/plain without a charset. requests
+        # defaults to Latin-1 in that case and corrupts valid UTF-8 YAML.
+        try:
+            return response.content.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{file_path} at {ref} is not valid UTF-8 text.") from exc
 
     def get_pull_request_diff_text(
         self,

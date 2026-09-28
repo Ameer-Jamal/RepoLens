@@ -19,6 +19,7 @@ from services.pull_request_service import PullRequestService
 from services.pull_request_comment_service import PullRequestCommentService
 from services.pr_creation_service import PullRequestCreateRequest, PullRequestCreationService, PullRequestUpdateRequest
 from services.pr_patch_service import PullRequestFromChangesRequest, PullRequestPatchService
+from services.pipeline_service import PipelineService
 from services.scope_manager import ScopeManager
 
 try:
@@ -55,6 +56,38 @@ class RepoLensMCPBackend:
         self.pr_patch_service = PullRequestPatchService(self.config, creation_service=self.pr_creation_service)
         self.git_context_service = GitContextService()
         self.diff_service = DiffService()
+        self.pipeline_service = PipelineService(self.config)
+
+    def _pipeline_repo(self, provider="", workspace="", slug="", scope="", repo_dir=""):
+        return self.resolve_repository(provider=provider, workspace=workspace, slug=slug,
+                                       scope=scope, repo_dir=repo_dir, allow_direct=True)
+
+    def list_pipelines(self, branch: str, *, provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), "branch": branch,
+                "pipelines": self.pipeline_service.list_pipelines(repo, branch)}
+
+    def run_pipeline(self, branch: str, pipeline_id: str, *, kind="", inputs=None,
+                     provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), **self.pipeline_service.run_pipeline(
+            repo, branch, pipeline_id, kind=kind, inputs=inputs)}
+
+    def list_pipeline_runs(self, *, pipeline_id="", branch="", limit=30,
+                           provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), "runs": self.pipeline_service.list_runs(
+            repo, pipeline_id=pipeline_id, branch=branch, limit=limit)}
+
+    def get_pipeline_run(self, run_id: str, *, provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), **self.pipeline_service.get_run(repo, run_id)}
+
+    def get_pipeline_log(self, run_id: str, step_id: str, *, max_chars=256000,
+                         provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), **self.pipeline_service.get_log(
+            repo, run_id, step_id, max_chars=max_chars)}
 
     def get_active_context(self) -> dict[str, Any]:
         return {
@@ -2293,6 +2326,45 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
             scope=scope,
             repo_dir=repo_dir,
         )
+
+    @app.tool()
+    def list_pipelines(branch: str, provider: str = "", workspace: str = "", slug: str = "",
+                       scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """List manually runnable pipelines and their inputs for a remote branch."""
+        return backend.list_pipelines(branch, provider=provider, workspace=workspace, slug=slug,
+                                      scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def run_pipeline(branch: str, pipeline_id: str, inputs: Optional[dict[str, str]] = None,
+                     kind: str = "", provider: str = "", workspace: str = "", slug: str = "",
+                     scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """Start a GitHub Actions workflow or Bitbucket pipeline with ordinary input values."""
+        return backend.run_pipeline(branch, pipeline_id, inputs=inputs, kind=kind, provider=provider,
+                                    workspace=workspace, slug=slug, scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def list_pipeline_runs(pipeline_id: str = "", branch: str = "", limit: int = 30,
+                           provider: str = "", workspace: str = "", slug: str = "",
+                           scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """List recent pipeline or workflow runs for a repository."""
+        return backend.list_pipeline_runs(pipeline_id=pipeline_id, branch=branch, limit=limit,
+                                          provider=provider, workspace=workspace, slug=slug,
+                                          scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def get_pipeline_run(run_id: str, provider: str = "", workspace: str = "", slug: str = "",
+                         scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """Get current pipeline status and steps or jobs for a run ID."""
+        return backend.get_pipeline_run(run_id, provider=provider, workspace=workspace,
+                                        slug=slug, scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def get_pipeline_log(run_id: str, step_id: str, max_chars: int = 256000,
+                         provider: str = "", workspace: str = "", slug: str = "",
+                         scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """Get bounded text log for a Bitbucket step or GitHub job."""
+        return backend.get_pipeline_log(run_id, step_id, max_chars=max_chars, provider=provider,
+                                        workspace=workspace, slug=slug, scope=scope, repo_dir=repo_dir)
 
     @app.tool()
     def approve_pull_request(

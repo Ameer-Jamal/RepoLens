@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl
-from PyQt5.QtGui import QColor, QFont, QCursor, QTextDocument
+from PyQt5.QtGui import QColor, QFont, QFontMetrics, QCursor, QTextDocument
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,6 +19,8 @@ from PyQt5.QtWidgets import (
     QToolButton,
     QApplication,
     QCheckBox,
+    QSizePolicy,
+    QProgressBar,
 )
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -115,7 +117,7 @@ class DiffFileCard(QFrame):
         # File path
         self.path_lbl = QLabel(self.diff_file.display_path, self.header_frame)
         self.path_lbl.setStyleSheet(
-            f"color: #f8fafc; font-weight: 600; font-size: 12px; font-family: '{self.typography.font_family}';"
+            f"color: #f8fafc; font-weight: 600; font-size: {self.typography.font_size}px; font-family: '{self.typography.font_family}';"
         )
         header_layout.addWidget(self.path_lbl)
 
@@ -163,6 +165,7 @@ class DiffFileCard(QFrame):
         self.content_layout.addWidget(self._filter_notice)
         self._update_filter_notice()
         self.card_layout.addWidget(self.content_container)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def toggle_collapse(self):
         self.is_collapsed = not self.is_collapsed
@@ -239,7 +242,9 @@ class DiffFileCard(QFrame):
 
     def _build_diff_content(self):
         lexer = self._get_lexer()
-        formatter = HtmlFormatter(nowrap=True, style="monokai")
+        # Inline token colors avoid Pygments' theme background painting a second
+        # rectangle behind every piece of code.
+        formatter = HtmlFormatter(nowrap=True, noclasses=True, style="github-dark")
 
         # Map comments by line number
         comments_by_line: dict[int, list[dict[str, Any]]] = {}
@@ -332,15 +337,18 @@ class DiffFileCard(QFrame):
         tb.setHtml(self._render_lines_html(lines, hunk_header, lexer, formatter))
         tb.anchorClicked.connect(self._on_comment_link)
 
-        # Auto-adjust height to document size
-        doc_height = int(tb.document().size().height())
-        tb.setFixedHeight(max(24, doc_height + 12))
-        tb.document().documentLayout().documentSizeChanged.connect(
-            lambda s: tb.setFixedHeight(max(24, int(s.height()) + 12))
-        )
+        self._resize_browser(tb)
+        tb.setVisible(any(self._is_line_visible(line) for line in lines))
 
         self._text_browsers.append(tb)
         self.content_layout.addWidget(tb)
+
+    def _resize_browser(self, browser: QTextBrowser):
+        font = QFont(self.typography.font_family)
+        font.setPixelSize(self.typography.font_size)
+        visible_rows = sum(self._is_line_visible(line) for line in browser._diff_lines)
+        row_height = QFontMetrics(font).lineSpacing() + 1
+        browser.setFixedHeight(max(24, visible_rows * row_height + 20))
 
     def _render_lines_html(
         self,
@@ -351,8 +359,6 @@ class DiffFileCard(QFrame):
     ) -> str:
         font_family = self.typography.font_family
         font_size = self.typography.font_size
-        pygments_css = formatter.get_style_defs(".code-text")
-
         rows = []
         for line in lines:
             if not self._is_line_visible(line):
@@ -363,18 +369,21 @@ class DiffFileCard(QFrame):
             if line.line_type == "add":
                 sign = "+"
                 row_class = "line-add"
-                code_bg = "#174331"
-                gutter_fg = "#86efac"
+                gutter_fg = "#72d9a5"
+                badge_bg = "#1b3b30"
+                marker = "▍"
             elif line.line_type == "del":
                 sign = "-"
                 row_class = "line-del"
-                code_bg = "#51212c"
-                gutter_fg = "#fda4af"
+                gutter_fg = "#f197a3"
+                badge_bg = "#432731"
+                marker = "▍"
             else:
-                sign = "&nbsp;"
+                sign = " "
                 row_class = "line-context"
-                code_bg = "#171d29"
-                gutter_fg = "#718096"
+                gutter_fg = "#64748b"
+                badge_bg = "#171b25"
+                marker = " "
 
             target_line = line.old_line_num if line.line_type == "del" else line.new_line_num
             side = "LEFT" if line.line_type == "del" else "RIGHT"
@@ -391,18 +400,20 @@ class DiffFileCard(QFrame):
                 hl_code = html.escape(line.content)
 
             rows.append(
-                f'<pre class="{row_class}" style="margin:0; padding:2px 6px; background-color:{code_bg}; '
-                f"color:#f1f5f9; font-family:'{font_family}'; font-size:{font_size}px;\">"
-                f'{comment_link or " "} '
-                f'<span style="color:{gutter_fg};">{old_str} {new_str} {sign}</span> '
-                f'&nbsp;&nbsp;<span class="code-text">{hl_code}</span></pre>'
+                f'<pre class="{row_class}" style="margin:0; padding:3px 6px; background-color:#171b25; '
+                f"color:#dbe4f0; font-family:'{font_family}'; font-size:{font_size}px;\">"
+                f'<span style="color:{gutter_fg};">{marker}</span> '
+                f'{comment_link or "   "} '
+                f'<span style="color:#8290a5;">{old_str} {new_str}</span> '
+                f'<span style="color:{gutter_fg}; background-color:{badge_bg}; font-weight:bold;"> {sign} </span>  '
+                f'{hl_code}</pre>'
             )
 
         table_rows = "".join(rows)
         return (
             f"<html><head><style>body {{ background-color:#12141a; color:#f1f5f9; "
             f"margin:0; padding:0; font-family:'{font_family}', monospace; "
-            f"font-size:{font_size}px; }} {pygments_css}</style></head>"
+            f"font-size:{font_size}px; }}</style></head>"
             f"<body>{table_rows}</body></html>"
         )
 
@@ -414,8 +425,10 @@ class DiffFileCard(QFrame):
             tb.setHtml(self._render_lines_html(
                 tb._diff_lines, tb._diff_header, tb._diff_lexer, tb._diff_formatter,
             ))
-            tb.setFixedHeight(max(24, int(tb.document().size().height()) + 12))
+            self._resize_browser(tb)
             tb.setVisible(any(self._is_line_visible(line) for line in tb._diff_lines))
+        self.content_container.updateGeometry()
+        self.updateGeometry()
 
     def _on_comment_link(self, url: QUrl):
         parts = url.toString().split(":")
@@ -448,6 +461,7 @@ class DiffStreamWidget(QWidget):
         self._ignore_whitespace = False
         self._hide_blank_lines = False
         self._viewed_paths: set[str] = set()
+        self._loading_panel: Optional[QFrame] = None
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -476,6 +490,7 @@ class DiffStreamWidget(QWidget):
         self.typography.fontSizeChanged.connect(self._on_font_size_changed)
 
     def clear(self):
+        self._loading_panel = None
         self._file_cards.clear()
         self._general_comment_widgets.clear()
         self._orphan_comment_widgets.clear()
@@ -487,6 +502,41 @@ class DiffStreamWidget(QWidget):
                 w.hide()
                 w.deleteLater()
         self.stream_layout.addStretch()
+
+    def show_loading(self, title: str):
+        self.clear()
+        panel = QFrame(self.scroll_widget)
+        panel.setStyleSheet(
+            "QFrame { background-color: #161b25; border: 1px solid #334155; border-radius: 8px; }"
+            "QLabel { color: #e2e8f0; border: none; }"
+            "QProgressBar { background-color: #242b38; border: none; border-radius: 4px; }"
+            "QProgressBar::chunk { background-color: #3b82f6; border-radius: 4px; }"
+        )
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(24, 18, 24, 18)
+        panel_layout.setSpacing(10)
+        label = QLabel(title, panel)
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet("font-size: 14px; font-weight: 700;")
+        panel_layout.addWidget(label)
+        progress = QProgressBar(panel)
+        progress.setRange(0, 0)
+        progress.setTextVisible(False)
+        progress.setFixedHeight(8)
+        panel_layout.addWidget(progress)
+        detail = QLabel("Fetching diff, comments, and CI checks. This may take a moment.", panel)
+        detail.setAlignment(Qt.AlignCenter)
+        detail.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        panel_layout.addWidget(detail)
+        self._loading_panel = panel
+        self.stream_layout.insertWidget(0, panel)
+
+    def show_error(self, message: str):
+        self.clear()
+        label = QLabel(message, self.scroll_widget)
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #fda4af; background: #271922; border: 1px solid #713442; border-radius: 6px; padding: 18px;")
+        self.stream_layout.insertWidget(0, label)
 
     def reset_viewed(self):
         self._viewed_paths.clear()

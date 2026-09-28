@@ -79,6 +79,21 @@ class _FakeBackend:
             "formatted_summary": "# PR #42 Comments",
         }
 
+    def list_pipelines(self, branch, **kwargs):
+        return {"branch": branch, "pipelines": [{"id": "7"}]}
+
+    def run_pipeline(self, branch, pipeline_id, **kwargs):
+        return {"run_id": "99", "branch": branch, "pipeline_id": pipeline_id, "inputs": kwargs.get("inputs")}
+
+    def list_pipeline_runs(self, **kwargs):
+        return {"runs": [{"run_id": "99"}]}
+
+    def get_pipeline_run(self, run_id, **kwargs):
+        return {"run_id": run_id, "steps": [{"id": "5"}]}
+
+    def get_pipeline_log(self, run_id, step_id, **kwargs):
+        return {"run_id": run_id, "step_id": step_id, "text": "ok"}
+
 
 class _FakeStdin:
     def __init__(self, is_tty):
@@ -151,6 +166,18 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("get_git_repository_context", tool_names)
             self.assertIn("get_pr_context", tool_names)
             self.assertIn("get_pr_comments", tool_names)
+            self.assertTrue({"list_pipelines", "run_pipeline", "list_pipeline_runs", "get_pipeline_run", "get_pipeline_log"} <= tool_names)
+
+            pipelines_result = await session.call_tool("list_pipelines", {"branch": "main"})
+            self.assertEqual(pipelines_result.structuredContent["pipelines"][0]["id"], "7")
+            dispatch_result = await session.call_tool("run_pipeline", {"branch": "main", "pipeline_id": "7", "inputs": {"suite": "smoke"}})
+            self.assertEqual(dispatch_result.structuredContent["inputs"], {"suite": "smoke"})
+            runs_result = await session.call_tool("list_pipeline_runs", {})
+            self.assertEqual(runs_result.structuredContent["runs"][0]["run_id"], "99")
+            run_result = await session.call_tool("get_pipeline_run", {"run_id": "99"})
+            self.assertEqual(run_result.structuredContent["steps"][0]["id"], "5")
+            log_result = await session.call_tool("get_pipeline_log", {"run_id": "99", "step_id": "5"})
+            self.assertEqual(log_result.structuredContent["text"], "ok")
 
             active_result = await session.call_tool("get_active_context", {})
             self.assertEqual(active_result.structuredContent["provider"], "github")

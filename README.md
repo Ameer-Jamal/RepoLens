@@ -31,6 +31,7 @@ Git providers already contain the context an AI needs, but that context is scatt
 
 6. **MCP Server Mode**: Expose repository discovery, selected repositories, PR lookup, ticket lookup, diffs, and contribution history as local MCP tools for AI clients.
 7. **PR Creation for AI Agents**: Create GitHub or Bitbucket pull requests from already-pushed source branches through the desktop app or MCP.
+8. **Pipeline Runner**: Start Bitbucket Pipelines and GitHub Actions workflows with parameters, then inspect run status, jobs or steps, and logs in the desktop app or through MCP.
 
 ---
 
@@ -93,6 +94,7 @@ python3 main.py
 
    - `PR Lens`: list/search PRs, filter by developer, open in PR Review, and generate PR or commit diffs.
    - `PR Review`: dedicated in-app code review tab with syntax-highlighted diffs, typography font scaling, changed files navigation, live CI status, and interactive inline comment threading & resolution.
+   - `Pipelines`: choose a repository, remote branch, and runnable pipeline or workflow; review parameters before starting a run, then inspect recent runs and logs. PR Review can preselect a PR's repository and source branch.
    - `Branch Commit Viewer`: inspect branch commits.
    - `Create PR`: create pull requests from configured repositories.
    - `Contribution History`: reconstruct work by developer, repository, branch, and date.
@@ -108,7 +110,7 @@ Contribution results appear as each repository finishes. For the fast Bitbucket 
 
 This repo includes a local stdio MCP server at `mcp_server.py`. Any MCP-compatible AI client can launch it and use RepoLens as a tool source.
 
-Read tools do not change provider data. The explicitly named create, update, and comment tools can create PRs or modify PR metadata and comments. RepoLens may also clone or fetch local repositories when a diff tool needs a checkout. Most tools do not edit repository files or create commits; `create_pull_request_with_changes` is the exception, and it is the only tool that writes files, creates a branch, commits, and pushes.
+Read tools do not change provider data. The explicitly named create, update, comment, and `run_pipeline` tools can create PRs, modify PR metadata or comments, or start remote CI runs. RepoLens may also clone or fetch local repositories when a diff tool needs a checkout. Most tools do not edit repository files or create commits; `create_pull_request_with_changes` is the exception, and it is the only tool that writes files, creates a branch, commits, and pushes.
 
 ### **Tools**
 
@@ -128,6 +130,11 @@ Read tools do not change provider data. The explicitly named create, update, and
 - `get_pr_context` (Unified tool to get PR metadata and diff from a URL, ticket, or title, with optional comment threads)
 - `get_pr_comments` (Fetch comments and review threads on a PR with file paths, line numbers, code context snippets, and AI-ready summary)
 - `get_pr_ci_status` (Fetch live CI build status, test pipelines, and check runs for a pull request)
+- `list_pipelines` (Discover runnable pipelines and their available inputs on a remote branch)
+- `run_pipeline` (Start a Bitbucket Pipeline or GitHub Actions workflow with parameters)
+- `list_pipeline_runs` (List recent runs)
+- `get_pipeline_run` (Inspect run status and steps or jobs)
+- `get_pipeline_log` (Read a bounded step or job log)
 - `approve_pull_request` (Formally approve a pull request with an optional review comment)
 - `unapprove_pull_request` (Revoke or dismiss an approval on a pull request)
 - `request_changes_on_pr` (Submit a formal 'Request Changes' review on a pull request with feedback notes)

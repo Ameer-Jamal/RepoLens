@@ -141,11 +141,23 @@ class ProviderApiApprovalsTests(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.ok = True
         mock_resp.status_code = 200
-        mock_resp.text = "print('hello world')\n"
+        mock_resp.content = "print('hello world')\n".encode("utf-8")
         mock_get.return_value = mock_resp
 
         content = self.bb_client.get_file_content(self.bb_repo, "main.py", "v1.0.0")
         self.assertEqual(content, "print('hello world')\n")
+
+    @patch("requests.get")
+    def test_bitbucket_get_file_content_decodes_utf8_without_charset(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.encoding = "ISO-8859-1"
+        mock_resp.content = "# Steps — avoid broken decoding\npipelines: {}\n".encode("utf-8")
+        mock_resp.text = mock_resp.content.decode("ISO-8859-1")
+        mock_get.return_value = mock_resp
+
+        content = self.bb_client.get_file_content(self.bb_repo, "bitbucket-pipelines.yml", "develop")
+        self.assertIn("Steps — avoid", content)
 
     @patch("requests.get")
     def test_github_get_pull_request_diff_text(self, mock_get):

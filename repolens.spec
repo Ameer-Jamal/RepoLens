@@ -20,6 +20,7 @@ hiddenimports = [
     'mcp.server',
     'mcp.server.fastmcp',
     'requests',
+    'yaml',
     'services',
     'models',
     'ui',

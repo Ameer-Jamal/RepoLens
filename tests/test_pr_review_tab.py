@@ -2,7 +2,7 @@ import sys
 import unittest
 from unittest.mock import patch
 from PyQt5.QtCore import QUrl
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QProgressBar
 
 from ui.PRReviewTab import PRReviewTab
 from ui.DiffFilesSidebar import DiffFilesSidebar
@@ -96,6 +96,29 @@ index 1234567..89abcdef 100644
         self.assertEqual(summaries[0]["path"], "services/auth.py")
         self.assertEqual(summaries[0]["comment_count"], 1)
 
+    def test_diff_changes_use_gutter_accents_and_fit_large_type(self):
+        self.typography.set_font_size(21)
+        stream = DiffStreamWidget(self.typography)
+        stream.resize(1100, 650)
+        stream.set_diff_content(
+            "diff --git a/release.yml b/release.yml\n--- a/release.yml\n+++ b/release.yml\n"
+            "@@ -1,3 +1,3 @@\n with:\n-  needs: prepare-release\n+  needs: [prepare-release, test-release]\n",
+            {},
+        )
+        card = stream._file_cards["release.yml"]
+        browser = card._text_browsers[0]
+        rendered = card._render_lines_html(card.diff_file.hunks[0].lines, "", browser._diff_lexer, browser._diff_formatter)
+        self.assertIn('class="line-add"', rendered)
+        self.assertIn("background-color:#171b25", rendered)
+        self.assertNotIn("#174331", rendered)
+        self.assertNotIn("#51212c", rendered)
+        self.assertNotIn("#272822", rendered)
+        stream.show()
+        QApplication.processEvents()
+        self.assertLessEqual(card.height(), card.sizeHint().height() + 8)
+        self.assertGreaterEqual(browser.height(), 3 * 21)
+        stream.close()
+
     def test_diff_copy_viewed_and_display_filters(self):
         stream = DiffStreamWidget(self.typography)
         diff_text = ("diff --git a/app.py b/app.py\nindex abc..def 100644\n--- a/app.py\n+++ b/app.py\n"
@@ -171,6 +194,16 @@ index 1234567..89abcdef 100644
         self.assertIsNotNone(tab.filter_combo)
         self.assertIsNotNone(tab.load_prs_btn)
 
+    def test_pipeline_shortcut_emits_pr_repository_and_branch(self):
+        tab = PRReviewTab(self.config)
+        repo = {"provider": "bitbucket", "owner": "workspace", "slug": "repo"}
+        tab._current_repo = repo
+        tab._current_pr = {"source_branch": "feature/test"}
+        received = []
+        tab.pipelineRequested.connect(lambda chosen_repo, branch: received.append((chosen_repo, branch)))
+        tab._request_pipeline()
+        self.assertEqual(received, [(repo, "feature/test")])
+
     def test_classic_theme_restores_original_styles(self):
         from PyQt5.QtWidgets import QWidget
         widget = QWidget()
@@ -204,6 +237,105 @@ index 1234567..89abcdef 100644
         self.assertEqual(tab._current_pr, pr_data)
         self.assertIn("123", tab.title_label.text())
 
+    def test_review_loading_panel_replaced_on_success_and_error(self):
+        class DeferredRunner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, fn, *args, **kwargs):
+                self.calls.append((fn, args, kwargs))
+
+        runner = DeferredRunner()
+        tab = PRReviewTab(self.config, task_runner=runner)
+        pr = {"id": "42", "title": "Review", "state": "OPEN"}
+        repo = self.config.get_active_repository()
+        tab.load_pull_request(pr, repo)
+        panel = tab.diff_stream._loading_panel
+        self.assertIsNotNone(panel)
+        progress = panel.findChild(QProgressBar)
+        self.assertEqual((progress.minimum(), progress.maximum()), (0, 0))
+        self.assertIn("42", panel.findChildren(type(tab.status_bar))[0].text())
+        runner.calls[-1][2]["on_result"]({
+            "diff_text": "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+            "comments": {"threads": []}, "ci_status": {},
+        })
+        self.assertIsNone(tab.diff_stream._loading_panel)
+        self.assertIn("a.py", tab.diff_stream._file_cards)
+
+        tab.load_pull_request(pr, repo)
+        with patch("ui.PRReviewTab.QMessageBox.warning"):
+            runner.calls[-1][2]["on_error"](RuntimeError("network failed"))
+        self.assertIsNone(tab.diff_stream._loading_panel)
+        self.assertIn("network failed", tab.status_bar.text())
+
+    def test_developer_filter_is_explicit_and_sent_to_service(self):
+        class DeferredRunner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, fn, *args, **kwargs):
+                self.calls.append((fn, args, kwargs))
+
+        runner = DeferredRunner()
+        tab = PRReviewTab(self.config, task_runner=runner)
+        tab.author_combo.setEditText("alice")
+        self.assertEqual(runner.calls, [])
+        tab.load_prs_btn.click()
+        self.assertEqual(len(runner.calls), 1)
+        with patch.object(tab.pr_service, "aggregate_pull_requests", return_value=([], {})) as list_prs:
+            self.assertEqual(runner.calls[0][0](), ([], {}))
+        self.assertEqual(list_prs.call_args.kwargs["developer"], "alice")
+        runner.calls[0][2]["on_result"](([], {}))
+        self.assertEqual(tab.developer_result_label.text(), "0 PRs by alice")
+        tab.author_combo.setCurrentIndex(0)
+        self.assertEqual(tab._selected_developer_filter(), "")
+        self.assertEqual(len(runner.calls), 1)
+        tab.author_combo.setCurrentIndex(1)
+        self.assertEqual(tab._selected_developer_filter(), "Me")
+        tab.load_prs_btn.click()
+        with patch.object(tab.pr_service, "aggregate_pull_requests", return_value=([], {})) as list_prs:
+            runner.calls[-1][0]()
+        self.assertEqual(list_prs.call_args.kwargs["developer"], "Me")
+
+    def test_all_repo_search_keeps_scope_and_waits_for_pr_selection(self):
+        class MultiConfig(_MockConfig):
+            def get_selected_repositories(self):
+                return [
+                    {"id": "1", "provider": "bitbucket", "owner": "workspace", "slug": "one"},
+                    {"id": "2", "provider": "bitbucket", "owner": "workspace", "slug": "two"},
+                ]
+
+        tab = PRReviewTab(MultiConfig())
+        self.assertTrue(tab._selected_repo().get("_all_repositories"))
+        tab.author_combo.setCurrentIndex(1)
+        records = [{"id": "12", "title": "Change", "state": "OPEN", "repo_id": "2",
+                    "repo_label": "workspace/two", "provider": "bitbucket"}]
+        with patch.object(tab.pr_service, "aggregate_pull_requests", return_value=(records, {})) as fetch:
+            tab.load_prs_btn.click()
+        self.assertEqual(len(fetch.call_args.args[0]), 2)
+        self.assertEqual(fetch.call_args.kwargs["developer"], "Me")
+        self.assertIsNone(tab._current_pr)
+        self.assertIsNone(tab.pr_combo.currentData())
+        self.assertIn("workspace/two", tab.pr_combo.itemText(1))
+        with patch.object(tab, "_fetch_pr_review_data", return_value={"diff_text": "", "comments": {}, "ci_status": {}}):
+            tab.pr_combo.setCurrentIndex(1)
+        self.assertEqual(tab._current_repo["slug"], "two")
+        self.assertTrue(tab._selected_repo().get("_all_repositories"))
+
+    def test_load_more_uses_saved_cursor_and_appends_results(self):
+        tab = PRReviewTab(self.config)
+        first = {"id": "1", "title": "First", "repo_id": "r", "state": "OPEN"}
+        second = {"id": "2", "title": "Second", "repo_id": "r", "state": "OPEN"}
+        with patch.object(tab.pr_service, "aggregate_pull_requests", side_effect=[
+            ([first], {"r": "next"}), ([second], {}),
+        ]) as fetch:
+            tab.load_repository_prs()
+            self.assertTrue(tab.more_prs_btn.isVisible() or not tab.isVisible())
+            tab.load_repository_prs(more=True)
+        self.assertEqual(fetch.call_args.args[2], {"r": "next"})
+        self.assertEqual([tab.pr_combo.itemData(i)["id"] for i in (1, 2)], ["1", "2"])
+        self.assertFalse(tab.more_prs_btn.isVisible())
+
     def test_pr_review_tab_combos_and_sync(self):
         tab = PRReviewTab(self.config)
         prs = [
@@ -211,19 +343,19 @@ index 1234567..89abcdef 100644
             {"id": "11", "title": "Second PR", "state": "MERGED", "author": "bob"},
         ]
         tab.sync_prs(prs)
-        self.assertEqual(tab.pr_combo.count(), 2)
-        self.assertIn("10", tab.pr_combo.itemText(0))
-        self.assertIn("11", tab.pr_combo.itemText(1))
+        self.assertEqual(tab.pr_combo.count(), 3)
+        self.assertIn("10", tab.pr_combo.itemText(1))
+        self.assertIn("11", tab.pr_combo.itemText(2))
 
         # Test selecting a PR in combo
-        tab._on_pr_combo_changed(1)
+        tab._on_pr_combo_changed(2)
         self.assertEqual(tab._current_pr["id"], "11")
 
     def test_pr_review_tab_on_tab_activated(self):
         tab = PRReviewTab(self.config)
         prs = [{"id": "99", "title": "Active PR", "state": "OPEN", "author": "charlie"}]
         tab.on_tab_activated(prs=prs)
-        self.assertEqual(tab.pr_combo.count(), 1)
+        self.assertEqual(tab.pr_combo.count(), 2)
         self.assertEqual(tab._current_pr["id"], "99")
 
     def test_service_threads_render_with_text_and_action_ids(self):

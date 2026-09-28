@@ -28,6 +28,7 @@ dependencies = [
     "PyQt5>=5.15.7",
     "Pygments>=2.14.0",
     "requests>=2.28.0",
+    "PyYAML>=6.0",
     "mcp>=1.27.0",
 ]
 

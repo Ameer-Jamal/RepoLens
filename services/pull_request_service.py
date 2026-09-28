@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import requests
@@ -32,15 +33,23 @@ class PullRequestService:
         repo_fetch_pairs = PRAggregationService.repos_for_page(selected_repos, cursor_state, reset)
         resolved_developer = self.resolve_developer_filter(developer)
 
-        for repo, repo_next in repo_fetch_pairs:
-            repo_records, repo_next_token = self.list_pull_requests_for_repo(
-                repo,
-                filter_mode=filter_mode,
-                next_cursor=repo_next or None,
+        def fetch(pair):
+            repo, repo_next = pair
+            records, token = self.list_pull_requests_for_repo(
+                repo, filter_mode=filter_mode, next_cursor=repo_next or None,
                 developer=resolved_developer,
             )
+            return repo, records, token
+
+        if len(repo_fetch_pairs) > 1:
+            with ThreadPoolExecutor(max_workers=min(4, len(repo_fetch_pairs))) as pool:
+                fetched = list(pool.map(fetch, repo_fetch_pairs))
+        else:
+            fetched = [fetch(pair) for pair in repo_fetch_pairs]
+
+        for repo, repo_records, repo_next_token in fetched:
             aggregated_records.extend(repo_records)
-            next_tokens[str((repo or {}).get("id", ""))] = repo_next_token or ""
+            next_tokens[PRAggregationService.repo_cursor_key(repo)] = repo_next_token or ""
 
         aggregated_records.sort(key=lambda pr: pr.get("updated_on") or "", reverse=True)
         normalized_state = PRAggregationService.normalize_next_state(selected_repos, next_tokens)
@@ -60,7 +69,25 @@ class PullRequestService:
         if search_text:
             return self.search_pull_requests([repo], filter_mode, search_text, developer=resolved_developer), None
         if resolved_developer:
-            return self.search_pull_requests([repo], filter_mode, "", developer=resolved_developer), None
+            # A developer view must include older PRs beyond the first provider
+            # page. Filter mapped author identities after walking every page.
+            records: list[dict] = []
+            cursor = next_cursor
+            seen_cursors: set[str] = set()
+            while True:
+                if provider == "github":
+                    config = self._get_github_config(repo)
+                    page, next_page = self._fetch_github_pull_requests_page(filter_mode, config, next_cursor=cursor)
+                else:
+                    config = self._get_bitbucket_config(repo)
+                    page, next_page = self._fetch_bitbucket_pull_requests_page(filter_mode, config, next_cursor=cursor)
+                page = [self._attach_repo_context(pr, repo) for pr in page]
+                records.extend(self._filter_by_developer(page, resolved_developer))
+                if not next_page or next_page in seen_cursors:
+                    break
+                seen_cursors.add(next_page)
+                cursor = next_page
+            return records, None
         if provider == "github":
             config = self._get_github_config(repo)
             records, cursor = self._fetch_github_pull_requests_page(filter_mode, config, next_cursor=next_cursor)

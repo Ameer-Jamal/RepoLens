@@ -25,6 +25,7 @@ from services.RepositoryProvider import RepositoryProvider
 from ui.SettingsTab import SettingsTab
 from ui.TaskRunner import TaskRunner
 from ui.PRReviewTab import PRReviewTab
+from ui.PipelinesTab import PipelinesTab
 from ui.theme import apply_theme
 
 DEFAULT_BITBUCKET_WORKSPACE = os.environ.get('BITBUCKET_WORKSPACE', 'example-workspace').strip() or 'example-workspace'
@@ -82,6 +83,8 @@ class RepoLens(QWidget):
         # Build tabs
         self.pr_tab_widget = self.prExtractDiffWidget()
         self.pr_review_tab = PRReviewTab(self.config_manager, self.task_runner)
+        self.pipelines_tab = PipelinesTab(self.config_manager, self.task_runner)
+        self.pr_review_tab.pipelineRequested.connect(self._open_pipeline_for_pr)
         self.branch_viewer = BranchCommitViewer(self.config_manager, self.task_runner)
         self.create_pr_tab = CreatePRTab(self.config_manager, self.task_runner)
         self.settings_tab = SettingsTab(self.config_manager, self.task_runner)
@@ -94,6 +97,7 @@ class RepoLens(QWidget):
         # Add tabs to the QTabWidget
         self.tabs.addTab(self.pr_tab_widget, "PR Lens")  # Default tab
         self.tabs.addTab(self.pr_review_tab, "PR Review")
+        self.tabs.addTab(self.pipelines_tab, "Pipelines")
         self.tabs.addTab(self.branch_viewer, "Branch Commit Viewer")
         self.tabs.addTab(self.create_pr_tab, "Create PR")
         self.tabs.addTab(self.contribution_history_tab, "Contribution History")
@@ -736,6 +740,7 @@ class RepoLens(QWidget):
         self._pr_cache.clear()
         self.apply_repo_config()
         self.contribution_history_tab.apply_provider_context()
+        self.pipelines_tab.refresh_repositories()
 
     def _on_provider_updated(self, provider):
         provider = (provider or 'bitbucket').lower()
@@ -750,6 +755,11 @@ class RepoLens(QWidget):
         self.pr_list.clear()
         self.apply_repo_config()
         self.contribution_history_tab.apply_provider_context()
+        self.pipelines_tab.refresh_repositories()
+
+    def _open_pipeline_for_pr(self, repo, branch):
+        self.tabs.setCurrentWidget(self.pipelines_tab)
+        self.pipelines_tab.select_context(repo, branch)
 
     def _on_tab_changed(self, index):
         if self._handling_tab_change:
@@ -762,6 +772,8 @@ class RepoLens(QWidget):
 
         if hasattr(self, "pr_review_tab") and current_widget is self.pr_review_tab:
             self.pr_review_tab.on_tab_activated(prs=getattr(self, "prs", []))
+        if current_widget is self.pipelines_tab:
+            self.pipelines_tab.refresh_repositories()
 
         if previous_widget is not self.settings_tab or current_widget is self.settings_tab:
             return
@@ -1271,6 +1283,7 @@ class RepoLens(QWidget):
 
             self.config_manager.set_selected_repositories(prepared)
             self.config_manager.set_active_repository(active_repo)
+            self.pipelines_tab.refresh_repositories()
             self._pr_cache.clear()
             self.contribution_history_tab.apply_provider_context()
             self.apply_repo_config()
