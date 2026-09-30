@@ -1260,7 +1260,8 @@ class PullRequestCommentService:
         lines.append("## Comment Guidelines for AI / Automation")
         lines.append("When adding comments or replying to PR threads, communicate like a natural human software engineer:")
         lines.append("- **Concise & Direct**: Keep comments brief (typically 1-3 sentences) focused strictly on the technical issue, fix, or rationale.")
+        lines.append("- **No Commit Hashes / SHA Values**: Do NOT mention or cite commit values, hashes, or SHA strings (e.g., do NOT write 'Fixed in abc1234' or 'Addressed in commit 7a8b9c0'). Referencing commit hashes looks automated and bot-like rather than natural peer engineering.")
         lines.append("- **No AI Stereotypes**: Avoid canned AI pleasantries and robotic templates (e.g., do NOT write 'Certainly!', 'Great catch!', 'Thank you for the feedback!', 'I hope this helps!', or 'As an AI model...').")
-        lines.append("- **Natural Tone**: State what changed or why plainly (e.g., 'Good catch, added the null check in abc1234', 'Updated bean qualifier to prevent collision', 'Kept this method private since it is only called by the internal parser').")
+        lines.append("- **Natural Tone**: State what changed or why plainly (e.g., 'Added the missing null check here', 'Updated bean qualifier to prevent collision', 'Kept this method private since it is only called by the internal parser').")
 
         return "\n".join(lines).strip()

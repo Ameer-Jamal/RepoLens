@@ -1985,11 +1985,12 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Note for AI agents: Write in a natural, concise, human-like engineer tone (1-3 sentences).
         Avoid robotic AI pleasantries, greetings, or meta-commentary (e.g. avoid 'Certainly!',
-        'Great suggestion!', 'Thank you for the review!', or 'As an AI...'). State technical details
-        or changes directly.
+        'Great suggestion!', 'Thank you for the review!', or 'As an AI...'). Do NOT mention commit hashes,
+        SHA values, or commit IDs — citing commit hashes looks like an automated bot rather than a natural engineer.
+        State technical details or changes directly in plain language.
 
         Args:
-            body: The text of the comment to post (write in a concise, natural, human-like engineer tone).
+            body: The text of the comment to post (write in a concise, natural, human-like engineer tone; do NOT cite commit values/hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             file_path: Optional relative file path for inline code comments (e.g. "src/main.py").
@@ -2031,6 +2032,7 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         Each item has a required `body` and optional `file_path`, `line`, and `side`.
         Supply `file_path` and `line` together for an inline comment; otherwise it is
         a general comment. `side` accepts the same values as `add_pr_comment`.
+        Note for AI agents: Write in a natural, concise human engineer tone and do NOT mention commit hashes, SHA values, or commit IDs.
         Results preserve input order and report failures individually; successful
         comments remain posted if another item fails. Avoid retrying successful items.
         """
@@ -2061,12 +2063,15 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Note for AI agents: Write replies in a natural, concise, human engineer tone (1-3 sentences).
         Avoid robotic AI filler, pleasantries, or boilerplate (e.g. avoid 'Certainly!', 'Great catch!',
-        'Thank you for the feedback!', or 'As an AI...'). State what was updated or resolved directly
-        (e.g., 'Fixed in abc1234', 'Added the missing null check here', 'Renamed bean to avoid conflict').
+        'Thank you for the feedback!', or 'As an AI...'). Do NOT mention commit hashes, SHA values, or
+        commit IDs (e.g. avoid 'Fixed in abc1234' or 'Resolved in commit 9f8a12b') — citing commit SHAs
+        looks like an automated bot rather than a natural engineer. State what was updated or resolved
+        directly in plain language (e.g., 'Added the missing null check here', 'Renamed bean to avoid conflict',
+        'Updated validation logic').
 
         Args:
             comment_id: The ID of the comment to reply to.
-            body: The text of the reply (write in a concise, natural, human-like engineer tone).
+            body: The text of the reply (write in a concise, natural, human-like engineer tone; do NOT cite commit values/hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -2102,10 +2107,13 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Note for AI agents: Write replies in a natural, concise, human engineer tone (1-3 sentences per thread).
         Avoid robotic AI filler, pleasantries, or boilerplate (e.g. avoid 'Certainly!', 'Great catch!',
-        'Thank you for the feedback!', or 'As an AI...'). State what was updated or resolved directly.
+        'Thank you for the feedback!', or 'As an AI...'). Do NOT mention commit hashes, SHA values, or
+        commit IDs (e.g. avoid 'Fixed in abc1234' or 'Resolved in commit 9f8a12b') — citing commit SHAs
+        looks like an automated bot rather than a natural engineer. State what was updated or resolved
+        directly in plain language.
 
         Args:
-            replies: Items containing 'comment_id' and 'body' (human-like, concise response text).
+            replies: Items containing 'comment_id' and 'body' (human-like, concise response text without commit hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID, or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -2140,11 +2148,11 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         """Edit an existing comment on a pull request.
 
         Note for AI agents: Write in a natural, concise, human engineer tone. Avoid robotic AI filler
-        or boilerplate. State technical context directly.
+        or boilerplate. Do NOT cite commit hashes, SHA values, or commit IDs. State technical context directly in plain language.
 
         Args:
             comment_id: The ID of the comment to edit.
-            body: The updated text of the comment (write in a concise, natural, human-like engineer tone).
+            body: The updated text of the comment (write in a concise, natural, human-like engineer tone; do NOT cite commit values/hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -2484,8 +2492,10 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         repo_dir: str = "",
     ) -> dict[str, Any]:
         """Formally approve a pull request with an optional review comment.
-        
+
         Submits review approval to GitHub or Bitbucket Cloud.
+        Note for AI agents: If providing a comment, write in a natural human engineer tone.
+        Do NOT mention commit hashes, SHA values, or commit IDs.
         """
         return backend.approve_pull_request(
             reference=reference,
@@ -2530,7 +2540,11 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         scope: str = "",
         repo_dir: str = "",
     ) -> dict[str, Any]:
-        """Submit a formal 'Request Changes' review on a pull request with feedback notes."""
+        """Submit a formal 'Request Changes' review on a pull request with feedback notes.
+
+        Note for AI agents: Keep feedback constructive, clear, and direct. Do NOT mention commit hashes,
+        SHA values, or commit IDs.
+        """
         return backend.request_changes_on_pr(
             comment=comment,
             reference=reference,
