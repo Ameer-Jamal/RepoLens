@@ -79,6 +79,14 @@ class _FakeBackend:
             "formatted_summary": "# PR #42 Comments",
         }
 
+    def add_pr_comments(self, comments, **kwargs):
+        return {
+            "pr_id": kwargs["pr_id"],
+            "repo_dir": kwargs["repo_dir"],
+            "summary": {"requested": len(comments), "succeeded": len(comments), "failed": 0},
+            "results": [{"index": index, "success": True, "comment": comment} for index, comment in enumerate(comments)],
+        }
+
     def list_pipelines(self, branch, **kwargs):
         return {"branch": branch, "pipelines": [{"id": "7"}]}
 
@@ -166,6 +174,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("get_git_repository_context", tool_names)
             self.assertIn("get_pr_context", tool_names)
             self.assertIn("get_pr_comments", tool_names)
+            self.assertIn("add_pr_comments", tool_names)
             self.assertTrue({"list_pipelines", "run_pipeline", "list_pipeline_runs", "get_pipeline_run", "get_pipeline_log"} <= tool_names)
 
             pipelines_result = await session.call_tool("list_pipelines", {"branch": "main"})
@@ -245,6 +254,21 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(pr_comments_result.structuredContent["summary"]["total_comments"], 2)
             self.assertEqual(pr_comments_result.structuredContent["threads"][0]["file_path"], "auth.py")
+
+            add_comments_result = await session.call_tool(
+                "add_pr_comments",
+                {
+                    "pr_id": "42",
+                    "repo_dir": "/tmp/demo",
+                    "comments": [
+                        {"body": "Overall"},
+                        {"body": "Inline", "file_path": "src/app.py", "line": 12},
+                    ],
+                },
+            )
+            self.assertEqual(add_comments_result.structuredContent["summary"]["requested"], 2)
+            self.assertEqual(add_comments_result.structuredContent["results"][1]["comment"]["line"], 12)
+            self.assertEqual(add_comments_result.structuredContent["repo_dir"], "/tmp/demo")
 
             git_context_result = await session.call_tool("get_git_repository_context", {})
             self.assertEqual(git_context_result.structuredContent["default_branch"], "main")

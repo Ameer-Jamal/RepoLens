@@ -566,6 +566,79 @@ def test_add_pr_comment(mock_backend):
         mock_add.assert_called_once()
 
 
+def test_add_pr_comments_posts_general_and_inline_in_order(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_comment_service, "add_comment") as mock_add:
+        mock_add.side_effect = [{"id": 201}, {"id": 202}]
+        result = backend.add_pr_comments(
+            comments=[
+                {"body": "Overall feedback"},
+                {"body": "Fix this line", "file_path": "src/app.py", "line": 12, "side": "to"},
+            ],
+            pr_id="42",
+            slug="backend-service",
+        )
+
+    assert result["pr_id"] == "42"
+    assert result["summary"] == {"requested": 2, "succeeded": 2, "failed": 0}
+    assert [entry["comment"]["id"] for entry in result["results"]] == [201, 202]
+    backend.resolve_repository.assert_called_once_with(
+        provider="", workspace="", slug="backend-service", scope="", repo_dir="", allow_direct=True
+    )
+    repo = backend.resolve_repository.return_value
+    assert mock_add.call_args_list[0].args == (repo, "42", "Overall feedback")
+    assert mock_add.call_args_list[0].kwargs == {"file_path": None, "line": None, "side": None}
+    assert mock_add.call_args_list[1].args == (repo, "42", "Fix this line")
+    assert mock_add.call_args_list[1].kwargs == {"file_path": "src/app.py", "line": 12, "side": "to"}
+
+
+def test_add_pr_comments_reports_failures_without_posting_invalid_inline_comments(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_comment_service, "add_comment") as mock_add:
+        mock_add.side_effect = [{"id": 201}, RuntimeError("Provider rejected comment")]
+        result = backend.add_pr_comments(
+            comments=[
+                {"body": "First"},
+                {"body": "Missing line", "file_path": "src/app.py"},
+                {"body": "Third"},
+            ],
+            pr_id="42",
+        )
+
+    assert result["summary"] == {"requested": 3, "succeeded": 1, "failed": 2}
+    assert result["results"][0] == {"index": 0, "success": True, "comment": {"id": 201}}
+    assert result["results"][1]["index"] == 1
+    assert "require both" in result["results"][1]["error"]
+    assert result["results"][2] == {"index": 2, "success": False, "error": "Provider rejected comment"}
+    assert mock_add.call_count == 2
+
+
+def test_add_pr_comments_validates_request(mock_backend):
+    backend, _ = mock_backend
+    with pytest.raises(ValueError, match="At least one comment"):
+        backend.add_pr_comments(comments=[], pr_id="42")
+    with pytest.raises(ValueError, match="Either 'pr_id' or 'reference'"):
+        backend.add_pr_comments(comments=[{"body": "Hello"}])
+    backend.resolve_repository.assert_not_called()
+
+
+def test_add_pr_comments_resolves_reference_once(mock_backend):
+    backend, _ = mock_backend
+    repo = backend.resolve_repository.return_value
+    backend.resolve_pr_from_reference = MagicMock(return_value=(repo, {"id": 42}))
+    with patch.object(backend.pr_comment_service, "add_comment", return_value={"id": 201}) as mock_add:
+        result = backend.add_pr_comments(
+            comments=[{"body": "First"}, {"body": "Second"}],
+            reference="https://bitbucket.org/example-workspace/backend-service/pull-requests/42",
+            provider="bitbucket",
+        )
+
+    assert result["pr_id"] == 42
+    backend.resolve_pr_from_reference.assert_called_once()
+    backend.resolve_repository.assert_not_called()
+    assert mock_add.call_count == 2
+
+
 def test_reply_to_pr_comment(mock_backend):
     backend, _ = mock_backend
     with patch.object(backend.pr_comment_service, "reply_to_comment") as mock_reply:
@@ -721,4 +794,3 @@ def test_get_file_content_at_ref(mock_backend):
         assert res["ref"] == "feature/test"
         assert res["content"] == "def hello(): pass\n"
         mock_content.assert_called_once()
-

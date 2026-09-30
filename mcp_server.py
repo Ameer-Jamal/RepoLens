@@ -880,6 +880,82 @@ class RepoLensMCPBackend:
             "comment": comment,
         }
 
+    def add_pr_comments(
+        self,
+        comments: list[dict[str, Any]],
+        *,
+        pr_id: str | int = "",
+        reference: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Post several general or inline comments to one pull request."""
+        if not isinstance(comments, list) or not comments:
+            raise ValueError("At least one comment is required.")
+
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        results: list[dict[str, Any]] = []
+        for index, item in enumerate(comments):
+            try:
+                if not isinstance(item, dict):
+                    raise ValueError("Comment must be an object with a body.")
+                file_path = item.get("file_path") or None
+                line = item.get("line")
+                if (file_path is None) != (line is None):
+                    raise ValueError("Inline comments require both 'file_path' and 'line'.")
+                if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+                    raise ValueError("Inline comment 'line' must be a positive integer.")
+                comment = self.pr_comment_service.add_comment(
+                    repo,
+                    resolved_pr_id,
+                    item.get("body"),
+                    file_path=file_path,
+                    line=line,
+                    side=item.get("side") or None,
+                )
+                results.append({"index": index, "success": True, "comment": comment})
+            except Exception as exc:  # Each provider write is independent; preserve partial results.
+                results.append({"index": index, "success": False, "error": str(exc)})
+
+        succeeded = sum(1 for result in results if result["success"])
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": resolved_pr_id,
+            "summary": {
+                "requested": len(results),
+                "succeeded": succeeded,
+                "failed": len(results) - succeeded,
+            },
+            "results": results,
+        }
+
     def reply_to_pr_comment(
         self,
         parent_id: str | int,
@@ -1932,6 +2008,36 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
             file_path=file_path,
             line=line,
             side=side,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def add_pr_comments(
+        comments: list[dict[str, Any]],
+        pr_id: str = "",
+        reference: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Post multiple general or inline comments on one PR in a single MCP call.
+
+        Each item has a required `body` and optional `file_path`, `line`, and `side`.
+        Supply `file_path` and `line` together for an inline comment; otherwise it is
+        a general comment. `side` accepts the same values as `add_pr_comment`.
+        Results preserve input order and report failures individually; successful
+        comments remain posted if another item fails. Avoid retrying successful items.
+        """
+        return backend.add_pr_comments(
+            comments=comments,
+            pr_id=pr_id,
+            reference=reference,
             provider=provider,
             workspace=workspace,
             slug=slug,
