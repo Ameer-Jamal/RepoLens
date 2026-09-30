@@ -1312,7 +1312,11 @@ class RepoLensMCPBackend:
             desired_slug = desired_slug or specific_slug
 
         if allow_direct and provider and workspace and slug:
-            return self._direct_repository(provider=provider, workspace=workspace, slug=slug, repo_dir=repo_dir)
+            direct = self._direct_repository(provider=provider, workspace=workspace, slug=slug, repo_dir=repo_dir)
+            existing_dir = self._find_existing_local_dir(direct)
+            if existing_dir:
+                direct["local_dir"] = existing_dir
+            return direct
 
         if allow_direct and repo_dir:
             return self.git_context_service.resolve(repo_dir=repo_dir).repository_dict()
@@ -1477,10 +1481,47 @@ class RepoLensMCPBackend:
             return repositories[0]
         raise ValueError("Unable to resolve repository for pull request.")
 
+    def _find_existing_local_dir(self, repo: dict) -> str:
+        direct = (repo.get("local_dir") or "").strip()
+        if direct:
+            return direct
+
+        provider = (repo.get("provider") or "").strip().lower()
+        owner = RepositoryProvider._safe_name(repo.get("owner") or "")
+        slug = RepositoryProvider._safe_name(repo.get("slug") or repo.get("name") or "")
+
+        # 1. Check candidate repositories (active & selected from config)
+        if owner and slug:
+            candidates = []
+            active = self.config.get_active_repository()
+            if active and isinstance(active, dict):
+                candidates.append(active)
+            candidates.extend(self.config.get_selected_repositories() or [])
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                c_owner = RepositoryProvider._safe_name(candidate.get("owner") or "")
+                c_slug = RepositoryProvider._safe_name(candidate.get("slug") or candidate.get("name") or "")
+                c_provider = (candidate.get("provider") or "").strip().lower()
+                if (not provider or not c_provider or provider == c_provider) and owner.lower() == c_owner.lower() and slug.lower() == c_slug.lower():
+                    cand_dir = (candidate.get("local_dir") or "").strip()
+                    if cand_dir and os.path.isdir(cand_dir):
+                        return cand_dir
+
+        # 2. Check managed repo root cache
+        if provider and owner and slug:
+            managed_root = (self.config.get_managed_repo_root() or "").strip()
+            if managed_root:
+                managed_dir = os.path.join(managed_root, provider, owner, slug)
+                if os.path.isdir(managed_dir):
+                    return managed_dir
+
+        return ""
+
     def _repo_dir(self, repo: dict, *, ensure_checkout: bool) -> str:
-        repo_dir = (repo.get("local_dir") or "").strip()
-        if repo_dir:
-            return repo_dir
+        existing = self._find_existing_local_dir(repo)
+        if existing:
+            return existing
         if not ensure_checkout:
             raise ValueError("Repository has no local checkout and ensure_checkout is disabled.")
         return RepositoryProvider.ensure_local_checkout(repo, self.config)

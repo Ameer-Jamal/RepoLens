@@ -614,6 +614,32 @@ def test_get_pr_diff_fallback_to_rest_diff_when_no_checkout(mock_backend):
                 mock_rest_diff.assert_called_once_with(resolved_repo, "2917")
 
 
+def test_find_existing_local_dir_from_managed_root(mock_backend, tmp_path):
+    backend, _ = mock_backend
+    managed_dir = tmp_path / "bitbucket" / "etqdev" / "mt-backend"
+    managed_dir.mkdir(parents=True)
+    with patch.object(backend.config, "get_managed_repo_root", return_value=str(tmp_path)):
+        with patch.object(backend.config, "get_selected_repositories", return_value=[]):
+            with patch.object(backend.config, "get_active_repository", return_value={}):
+                found = backend._find_existing_local_dir({"provider": "bitbucket", "owner": "etqdev", "slug": "mt-backend"})
+                assert found == str(managed_dir)
+
+
+def test_find_existing_local_dir_from_selected_repos(mock_backend, tmp_path):
+    backend, _ = mock_backend
+    custom_dir = tmp_path / "Reliance-Repos" / "NXG" / "mt-backend"
+    custom_dir.mkdir(parents=True)
+    with patch.object(backend.config, "get_managed_repo_root", return_value=str(tmp_path / "managed")):
+        with patch.object(
+            backend.config,
+            "get_selected_repositories",
+            return_value=[{"provider": "bitbucket", "owner": "etqdev", "slug": "mt-backend", "local_dir": str(custom_dir)}],
+        ):
+            with patch.object(backend.config, "get_active_repository", return_value={}):
+                found = backend._find_existing_local_dir({"provider": "bitbucket", "owner": "etqdev", "slug": "mt-backend"})
+                assert found == str(custom_dir)
+
+
 
 def test_add_pr_comment(mock_backend):
     backend, _ = mock_backend
