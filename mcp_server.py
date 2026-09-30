@@ -315,21 +315,48 @@ class RepoLensMCPBackend:
             allow_direct=True,
         )
         pr = self.pr_service.get_pull_request(repo, pr_id)
-        repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
-        result = self.diff_service.generate_pr_diff(pr, repo_dir)
-        diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+        effective_repo_dir = ""
+        diff_text = ""
+        truncated = False
+        merge_base = ""
+        resolved_source = pr.get("source_branch") or ""
+        resolved_destination = pr.get("destination_branch") or ""
+        source_commit = pr.get("source_commit") or ""
+        destination_commit = pr.get("destination_commit") or ""
+        merge_commit = pr.get("merge_commit") or ""
+
+        try:
+            effective_repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
+            result = self.diff_service.generate_pr_diff(pr, effective_repo_dir)
+            diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+            merge_base = result.merge_base
+            resolved_source = result.resolved_source
+            resolved_destination = result.resolved_destination
+            source_commit = result.source_commit or source_commit
+            destination_commit = result.destination_commit or destination_commit
+            merge_commit = result.merge_commit or merge_commit
+        except Exception:
+            effective_repo_dir = (repo.get("local_dir") or repo_dir or "").strip()
+            target_id = pr.get("id") or pr_id
+            try:
+                raw_diff = self.pr_service.get_pull_request_diff_text(repo, target_id)
+                diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
+            except Exception:
+                if not ensure_checkout and not effective_repo_dir:
+                    raise
+
         return {
             "repository": self._repo_identity(repo),
             "pr": pr,
-            "repo_dir": repo_dir,
+            "repo_dir": effective_repo_dir,
             "diff_text": diff_text,
             "truncated": truncated,
-            "merge_base": result.merge_base,
-            "resolved_source": result.resolved_source,
-            "resolved_destination": result.resolved_destination,
-            "source_commit": result.source_commit,
-            "destination_commit": result.destination_commit,
-            "merge_commit": result.merge_commit,
+            "merge_base": merge_base,
+            "resolved_source": resolved_source,
+            "resolved_destination": resolved_destination,
+            "source_commit": source_commit,
+            "destination_commit": destination_commit,
+            "merge_commit": merge_commit,
         }
 
     def get_commit_diff(
@@ -738,28 +765,53 @@ class RepoLensMCPBackend:
             slug=slug,
             repo_dir=repo_dir,
         )
-        repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
-        result = self.diff_service.generate_pr_diff(pr, repo_dir)
-        diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+        effective_repo_dir = ""
+        diff_text = ""
+        truncated = False
+        merge_base = ""
+        source_commit = pr.get("source_commit") or ""
+        destination_commit = pr.get("destination_commit") or ""
+        merge_commit = pr.get("merge_commit") or ""
+
+        try:
+            effective_repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
+            result = self.diff_service.generate_pr_diff(pr, effective_repo_dir)
+            diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+            merge_base = result.merge_base
+            source_commit = result.source_commit or source_commit
+            destination_commit = result.destination_commit or destination_commit
+            merge_commit = result.merge_commit or merge_commit
+        except Exception:
+            effective_repo_dir = (repo.get("local_dir") or repo_dir or "").strip()
+            pr_id = pr.get("id")
+            if pr_id is not None:
+                try:
+                    raw_diff = self.pr_service.get_pull_request_diff_text(repo, pr_id)
+                    diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
+                except Exception:
+                    if not ensure_checkout and not effective_repo_dir:
+                        raise
+            elif not effective_repo_dir:
+                raise
         
         response: dict[str, Any] = {
             "repository": self._repo_identity(repo),
             "pr": pr,
-            "repo_dir": repo_dir,
+            "repo_dir": effective_repo_dir,
             "diff_text": diff_text,
             "truncated": truncated,
-            "merge_base": result.merge_base,
-            "source_commit": result.source_commit,
-            "destination_commit": result.destination_commit,
-            "merge_commit": result.merge_commit,
+            "merge_base": merge_base,
+            "source_commit": source_commit,
+            "destination_commit": destination_commit,
+            "merge_commit": merge_commit,
         }
 
         if include_comments:
             comments_res = self.pr_comment_service.get_pull_request_comments(
                 repo,
                 pr.get("id"),
-                repo_dir=repo_dir,
-                include_code_context=True,
+                repo_dir=effective_repo_dir,
+                include_code_context=bool(effective_repo_dir),
             )
             response["comments"] = comments_res.get("comments", [])
             response["threads"] = comments_res.get("threads", [])
@@ -1788,7 +1840,18 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         ensure_checkout: bool = True,
         max_chars: int = DEFAULT_DIFF_CHAR_LIMIT,
     ) -> dict[str, Any]:
-        """Return a repository pull request diff and metadata."""
+        """Return a repository pull request diff and metadata.
+
+        Args:
+            pr_id: Pull request number or ID (e.g. "42").
+            provider: 'github' or 'bitbucket' (defaults to configured provider).
+            workspace: Repository owner/workspace.
+            slug: Repository slug/name.
+            scope: Repo scope ('active', 'selected', or 'specific:<owner>/<slug>').
+            repo_dir: Optional local repository directory path.
+            ensure_checkout: If True, clones or updates a local git checkout. If False or if local checkout is absent, falls back to provider REST API for diff.
+            max_chars: Maximum diff characters to return (clamped to limit).
+        """
         return backend.get_pr_diff(
             pr_id=pr_id,
             provider=provider,
@@ -1912,7 +1975,18 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         max_chars: int = DEFAULT_DIFF_CHAR_LIMIT,
         include_comments: bool = False,
     ) -> dict[str, Any]:
-        """A unified tool to get both PR metadata and diff from a URL, ticket, or title, with optional comments."""
+        """A unified tool to get both PR metadata and diff from a URL, ticket, or title, with optional comments.
+
+        Args:
+            reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
+            provider: 'github' or 'bitbucket' (defaults to configured provider).
+            workspace: Repository owner/workspace.
+            slug: Repository slug/name.
+            repo_dir: Optional local repository directory path.
+            ensure_checkout: If True, clones or updates a local git checkout. If False or if local checkout is absent, falls back to provider REST API for diff.
+            max_chars: Maximum diff characters to return (clamped to limit).
+            include_comments: If True, includes PR review comments, unresolved threads, and AI-ready summary.
+        """
         return backend.get_pr_context(
             reference=reference,
             provider=provider,

@@ -556,6 +556,65 @@ def test_get_pr_context_includes_comments_when_requested(mock_backend):
                     assert result["comments_formatted"] == "Summary of comments"
 
 
+def test_get_pr_context_fallback_to_rest_diff_when_no_checkout(mock_backend):
+    backend, provider = mock_backend
+    resolved_repo = {
+        "provider": "bitbucket",
+        "owner": "etqdev",
+        "slug": "mt-backend",
+        "full_name": "etqdev/mt-backend",
+        "local_dir": "",
+    }
+    resolved_pr = {"id": 2917, "title": "Feature branch"}
+
+    with patch.object(backend, "resolve_pr_from_reference", return_value=(resolved_repo, resolved_pr)):
+        with patch.object(backend.pr_service, "get_pull_request_diff_text", return_value="diff --git from rest") as mock_rest_diff:
+            with patch.object(backend.pr_comment_service, "get_pull_request_comments") as mock_comments:
+                mock_comments.return_value = {
+                    "summary": {"total_comments": 1, "unresolved_threads": 0},
+                    "threads": [],
+                    "comments": [{"id": 100}],
+                    "formatted_summary": "Clean",
+                }
+
+                result = backend.get_pr_context(
+                    reference="https://bitbucket.org/etqdev/mt-backend/pull-requests/2917",
+                    ensure_checkout=False,
+                    include_comments=True,
+                )
+
+                assert result["diff_text"] == "diff --git from rest"
+                assert result["repo_dir"] == ""
+                assert result["pr"]["id"] == 2917
+                assert result["comments"][0]["id"] == 100
+                mock_rest_diff.assert_called_once_with(resolved_repo, 2917)
+
+
+def test_get_pr_diff_fallback_to_rest_diff_when_no_checkout(mock_backend):
+    backend, provider = mock_backend
+    resolved_repo = {
+        "provider": "bitbucket",
+        "owner": "etqdev",
+        "slug": "mt-backend",
+        "full_name": "etqdev/mt-backend",
+        "local_dir": "",
+    }
+    resolved_pr = {"id": "2917", "title": "Feature branch", "source_branch": "feature", "destination_branch": "main"}
+
+    with patch.object(backend, "resolve_repository", return_value=resolved_repo):
+        with patch.object(backend.pr_service, "get_pull_request", return_value=resolved_pr):
+            with patch.object(backend.pr_service, "get_pull_request_diff_text", return_value="diff --git from rest") as mock_rest_diff:
+                result = backend.get_pr_diff(
+                    pr_id="2917",
+                    ensure_checkout=False,
+                )
+
+                assert result["diff_text"] == "diff --git from rest"
+                assert result["repo_dir"] == ""
+                mock_rest_diff.assert_called_once_with(resolved_repo, "2917")
+
+
+
 def test_add_pr_comment(mock_backend):
     backend, _ = mock_backend
     with patch.object(backend.pr_comment_service, "add_comment") as mock_add:
