@@ -160,6 +160,53 @@ class ProviderApiApprovalsTests(unittest.TestCase):
         self.assertIn("Steps — avoid", content)
 
     @patch("requests.get")
+    def test_bitbucket_get_file_content_resolves_slash_branch_to_commit_hash(self, mock_get):
+        branch = MagicMock(status_code=200)
+        branch.json.return_value = {"target": {"hash": "abc123def456"}}
+        source = MagicMock(status_code=200)
+        source.content = b"pipelines: {}\n"
+        mock_get.side_effect = [branch, source]
+
+        content = self.bb_client.get_file_content(self.bb_repo, "bitbucket-pipelines.yml", "feature/some-branch")
+
+        self.assertEqual(content, "pipelines: {}\n")
+        self.assertTrue(mock_get.call_args_list[0].args[0].endswith("/refs/branches/feature%2Fsome-branch"))
+        self.assertIn("/src/abc123def456/bitbucket-pipelines.yml", mock_get.call_args_list[1].args[0])
+
+    @patch("requests.get")
+    def test_bitbucket_get_file_content_accepts_an_already_encoded_slash_branch(self, mock_get):
+        branch = MagicMock(status_code=200)
+        branch.json.return_value = {"target": {"hash": "abc123def456"}}
+        source = MagicMock(status_code=200)
+        source.content = b"x\n"
+        mock_get.side_effect = [branch, source]
+
+        self.bb_client.get_file_content(self.bb_repo, "a.yml", "feature%2Fsome-branch")
+
+        self.assertTrue(mock_get.call_args_list[0].args[0].endswith("/refs/branches/feature%2Fsome-branch"))
+
+    @patch("requests.get")
+    def test_bitbucket_get_file_content_leaves_a_slash_ref_that_is_not_a_branch(self, mock_get):
+        not_a_branch = MagicMock(status_code=404)
+        source = MagicMock(status_code=200)
+        source.content = b"x\n"
+        mock_get.side_effect = [not_a_branch, source]
+
+        self.bb_client.get_file_content(self.bb_repo, "a.yml", "releases/1.0")
+
+        self.assertIn("/src/releases/1.0/a.yml", mock_get.call_args_list[1].args[0])
+
+    @patch("requests.get")
+    def test_bitbucket_get_file_content_does_not_look_up_names_without_a_slash(self, mock_get):
+        source = MagicMock(status_code=200)
+        source.content = b"x\n"
+        mock_get.return_value = source
+
+        self.bb_client.get_file_content(self.bb_repo, "a.yml", "develop")
+
+        self.assertEqual(mock_get.call_count, 1)
+
+    @patch("requests.get")
     def test_github_get_pull_request_diff_text(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.ok = True

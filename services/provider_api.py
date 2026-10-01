@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from typing import Callable, Optional
+from urllib.parse import quote, unquote
 
 import requests
 
@@ -1321,6 +1322,23 @@ class BitbucketProviderClient(ProviderClient):
             "comment_error": comment_error,
         }
 
+    def _resolve_slash_branch(self, repository: RepositoryRef, ref: str) -> str:
+        """The src endpoint cannot resolve a branch name containing a slash, so use its commit hash."""
+        name = unquote(ref)
+        if "/" not in name:
+            return ref
+        username, password = self._auth()
+        response = requests.get(
+            f"https://api.bitbucket.org/2.0/repositories/{repository.workspace}/{repository.slug}"
+            f"/refs/branches/{quote(name, safe='')}",
+            auth=(username, password),
+            timeout=25,
+        )
+        if response.status_code == 404:
+            return ref  # not a branch (for example a tag), so leave it as given
+        response.raise_for_status()
+        return response.json()["target"]["hash"]
+
     def get_file_content(
         self,
         repository: RepositoryRef,
@@ -1331,7 +1349,8 @@ class BitbucketProviderClient(ProviderClient):
         cleaned_path = file_path.lstrip("/")
         url = (
             f"https://api.bitbucket.org/2.0/repositories/"
-            f"{repository.workspace}/{repository.slug}/src/{ref}/{cleaned_path}"
+            f"{repository.workspace}/{repository.slug}/src/"
+            f"{self._resolve_slash_branch(repository, ref)}/{cleaned_path}"
         )
         response = requests.get(url, auth=(username, password), timeout=25)
         response.raise_for_status()
