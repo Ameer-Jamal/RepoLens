@@ -47,12 +47,15 @@ class PipelineService:
         response.raise_for_status()
         return response
 
-    def _pages(self, url, *, headers, auth, key):
+    def _pages(self, url, *, headers, auth, key, limit=None, predicate=None):
         records = []
         for _ in range(10):
             response = self._request("GET", url, headers=headers, auth=auth)
             payload = response.json()
-            records.extend(payload if key == "__list__" and isinstance(payload, list) else payload.get(key, []))
+            batch = payload if key == "__list__" and isinstance(payload, list) else payload.get(key, [])
+            records.extend(item for item in batch if predicate is None or predicate(item))
+            if limit is not None and len(records) >= limit:
+                return records[:limit]
             if "api.bitbucket.org" in url:
                 url = payload.get("next")
             else:
@@ -150,7 +153,7 @@ class PipelineService:
             raise ValueError("Pipeline is not runnable on the selected branch.")
         if kind and kind != match["kind"]:
             raise ValueError("Pipeline kind does not match the selected pipeline.")
-        values = {str(k): str(v) for k, v in (inputs or {}).items()}
+        values = {str(k): str(v).lower() if isinstance(v, bool) else str(v) for k, v in (inputs or {}).items()}
         if provider == "github":
             allowed = {field["name"] for field in match["inputs"]}
             if set(values) - allowed:
@@ -158,8 +161,10 @@ class PipelineService:
             for field in match["inputs"]:
                 if field["required"] and not values.get(field["name"]) and field["default"] is None:
                     raise ValueError(f"Required input missing: {field['name']}")
-                if field["options"] and values.get(field["name"]) not in field["options"]:
+                if field["options"] and field["name"] in values and values[field["name"]] not in field["options"]:
                     raise ValueError(f"Invalid choice for {field['name']}")
+                if field.get("type") == "boolean" and field["name"] in values and values[field["name"]] not in {"true", "false"}:
+                    raise ValueError(f"Invalid boolean for {field['name']}")
             response = self._request("POST", f"{base}/actions/workflows/{quote(str(pipeline_id), safe='')}/dispatches",
                                      headers=headers, auth=auth, json={"ref": branch, "inputs": values})
             payload = response.json() if response.content else {}
@@ -183,20 +188,32 @@ class PipelineService:
         if provider == "github":
             path = f"/actions/workflows/{quote(str(pipeline_id), safe='')}/runs" if pipeline_id else "/actions/runs"
             url = f"{base}{path}?{urlencode({'per_page': limit, **({'branch': branch} if branch else {})})}"
-            raw = self._pages(url, headers=headers, auth=auth, key="workflow_runs")
+            raw = self._pages(url, headers=headers, auth=auth, key="workflow_runs", limit=limit,
+                              predicate=lambda r: not branch or r.get("head_branch") == branch)
             return [{"run_id": str(r.get("id")), "name": r.get("name") or "", "branch": r.get("head_branch") or "",
                      "status": r.get("status") or "", "conclusion": r.get("conclusion") or "", "url": r.get("html_url") or "",
                      "created_at": r.get("created_at") or ""} for r in raw if not branch or r.get("head_branch") == branch][:limit]
         params = {"pagelen": limit, "sort": "-created_on"}
         if branch:
             params["target.ref_name"] = branch
-        raw = self._pages(f"{base}/pipelines/?{urlencode(params)}", headers=headers, auth=auth, key="values")
+        if pipeline_id and pipeline_id not in {"branch", "default"}:
+            params["target.selector.type"] = "custom"
+            params["target.selector.pattern"] = pipeline_id
+        def matches(run):
+            target = run.get("target") or {}
+            selector = target.get("selector") or {}
+            if branch and target.get("ref_name") != branch:
+                return False
+            if pipeline_id in {"branch", "default"}:
+                return selector.get("type") != "custom"
+            return not pipeline_id or selector.get("pattern") == pipeline_id
+        raw = self._pages(f"{base}/pipelines/?{urlencode(params)}", headers=headers, auth=auth, key="values",
+                          limit=limit, predicate=matches)
         return [{"run_id": r.get("uuid") or "", "name": ((r.get("target") or {}).get("selector") or {}).get("pattern") or "Branch pipeline",
                  "branch": (r.get("target") or {}).get("ref_name") or "", "status": ((r.get("state") or {}).get("name")) or "",
                  "conclusion": (((r.get("state") or {}).get("result") or {}).get("name")) or "",
                  "url": ((r.get("links") or {}).get("html") or {}).get("href") or "", "created_at": r.get("created_on") or ""}
-                for r in raw if not pipeline_id or (((r.get("target") or {}).get("selector") or {}).get("pattern") or "default")
-                == ("default" if pipeline_id in {"branch", "default"} else pipeline_id)][:limit]
+                for r in raw]
 
     def get_run(self, repo, run_id):
         provider, _, base, headers, auth = self._context(repo)
@@ -227,6 +244,9 @@ class PipelineService:
         limit = min(max(int(max_chars), 1), LOG_LIMIT)
         run, step = quote(str(run_id), safe=""), quote(str(step_id), safe="")
         url = f"{base}/actions/jobs/{step}/logs" if provider == "github" else f"{base}/pipelines/{run}/steps/{step}/log"
+        if provider == "bitbucket":
+            # The step log endpoint serves a raw stream and answers 406 to Accept: application/json.
+            headers = {**headers, "Accept": "application/octet-stream"}
         response = self._request("GET", url, headers=headers, auth=auth, stream=True)
         chunks, size = [], 0
         try:

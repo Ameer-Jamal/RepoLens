@@ -590,6 +590,15 @@ def test_get_pr_context_fallback_to_rest_diff_when_no_checkout(mock_backend):
                 mock_rest_diff.assert_called_once_with(resolved_repo, 2917)
 
 
+def test_get_pr_diff_surfaces_failure_when_local_and_provider_diff_fail(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "get_pull_request", return_value={"id": "42"}), patch.object(
+        backend, "_repo_dir", side_effect=RuntimeError("Checkout unavailable")
+    ), patch.object(backend.pr_service, "get_pull_request_diff_text", side_effect=RuntimeError("API unavailable")):
+        with pytest.raises(RuntimeError, match="API unavailable"):
+            backend.get_pr_diff(pr_id="42")
+
+
 def test_get_pr_diff_fallback_to_rest_diff_when_no_checkout(mock_backend):
     backend, provider = mock_backend
     resolved_repo = {

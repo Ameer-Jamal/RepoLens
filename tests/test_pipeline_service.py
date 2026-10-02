@@ -89,6 +89,23 @@ class PipelineServiceTests(unittest.TestCase):
                 self.service.run_pipeline(GH, "missing", "7")
 
     @patch("services.pipeline_service.build_provider_client_for_name")
+    def test_github_dispatch_uses_omitted_defaults_and_normalizes_booleans(self, client_factory):
+        client_factory.return_value._headers.return_value = {}
+        client_factory.return_value.branch_exists.return_value = True
+        pipeline = {"id": "7", "kind": "workflow", "inputs": [
+            {"name": "suite", "required": True, "default": "smoke", "options": ["smoke", "full"]},
+            {"name": "debug", "type": "boolean", "required": False, "default": False, "options": []},
+        ]}
+        response = Mock(content=b"")
+        with patch.object(self.service, "list_pipelines", return_value=[pipeline]), patch.object(
+            self.service, "_request", return_value=response
+        ) as request:
+            self.service.run_pipeline(GH, "main", "7", inputs={"debug": False})
+            self.assertEqual(request.call_args.kwargs["json"]["inputs"], {"debug": "false"})
+            with self.assertRaisesRegex(ValueError, "Invalid boolean"):
+                self.service.run_pipeline(GH, "main", "7", inputs={"debug": "sometimes"})
+
+    @patch("services.pipeline_service.build_provider_client_for_name")
     def test_malformed_definition_and_log_limit(self, client_factory):
         client_factory.return_value._auth.return_value = ("person@example.com", "token")
         client_factory.return_value.branch_exists.return_value = True
@@ -102,6 +119,28 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual(result["text"], "abcd")
         self.assertTrue(result["truncated"])
         response.close.assert_called_once()
+
+    @patch("services.pipeline_service.build_provider_client_for_name")
+    def test_bitbucket_log_asks_for_the_raw_stream(self, client_factory):
+        client_factory.return_value._auth.return_value = ("person@example.com", "token")
+        response = Mock()
+        response.iter_content.return_value = iter([b"log"])
+        with patch.object(self.service, "_request", return_value=response) as request:
+            self.service.get_log(BB, "{run}", "{step}")
+        self.assertEqual(request.call_args.kwargs["headers"]["Accept"], "application/octet-stream")
+
+    @patch("services.pipeline_service.build_provider_client_for_name")
+    def test_bitbucket_branch_history_matches_branch_selectors_and_stops_at_limit(self, client_factory):
+        client_factory.return_value._auth.return_value = ("person@example.com", "token")
+        response = Mock()
+        response.json.return_value = {"values": [
+            {"uuid": "custom", "target": {"ref_name": "develop", "selector": {"type": "custom", "pattern": "smoke"}}},
+            {"uuid": "branch", "target": {"ref_name": "develop", "selector": {"type": "branches", "pattern": "develop"}}},
+        ], "next": "https://api.bitbucket.org/next"}
+        with patch.object(self.service, "_request", return_value=response) as request:
+            runs = self.service.list_runs(BB, "branch", "develop", limit=1)
+        self.assertEqual([run["run_id"] for run in runs], ["branch"])
+        request.assert_called_once()
 
     @patch("services.pipeline_service.build_provider_client_for_name")
     def test_permission_failure_is_exposed(self, client_factory):

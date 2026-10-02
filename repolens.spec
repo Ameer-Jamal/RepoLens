@@ -89,8 +89,8 @@ app = BUNDLE(
         'CFBundleName': 'RepoLens',
         'CFBundleDisplayName': 'RepoLens',
         'CFBundleIdentifier': 'com.repolens.app',
-        'CFBundleVersion': '1.0.0',
-        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': '1.1.0',
+        'CFBundleShortVersionString': '1.1.0',
         'NSHighResolutionCapable': 'True',
     },
 )

@@ -49,6 +49,38 @@ class ProviderApiCITests(unittest.TestCase):
         )
 
     @patch("services.provider_api._get_json_with_retry")
+    def test_bitbucket_failure_on_later_page_is_not_hidden(self, mock_get_json):
+        mock_get_json.side_effect = [
+            {"values": [{"name": "Build", "state": "SUCCESSFUL"}], "next": "https://api.bitbucket.org/next"},
+            {"values": [{"name": "Tests", "state": "FAILED"}]},
+        ]
+        result = self.bb_client.get_pull_request_statuses(self.bb_repo, "abc")
+        self.assertEqual(result["state"], "FAILED")
+        self.assertEqual(result["total_count"], 2)
+
+    @patch("services.provider_api._get_json_with_retry")
+    def test_github_failure_on_later_page_is_not_hidden(self, mock_get_json):
+        mock_get_json.side_effect = [
+            {"total_count": 2, "check_runs": [{"name": "Build", "status": "completed", "conclusion": "success"}]},
+            {"total_count": 2, "check_runs": [{"name": "Tests", "status": "completed", "conclusion": "failure"}]},
+            {"total_count": 0, "statuses": []},
+        ]
+        result = self.gh_client.get_pull_request_statuses(self.gh_repo, "abc")
+        self.assertEqual(result["state"], "FAILED")
+        self.assertEqual(result["total_count"], 2)
+        self.assertIn("page=2", mock_get_json.call_args_list[1].args[0])
+
+    @patch("services.provider_api._get_json_with_retry")
+    def test_github_incomplete_status_access_cannot_report_success(self, mock_get_json):
+        mock_get_json.side_effect = [
+            PermissionError("Checks access denied"),
+            {"statuses": [{"context": "Build", "state": "success"}]},
+        ]
+        result = self.gh_client.get_pull_request_statuses(self.gh_repo, "abc")
+        self.assertEqual(result["state"], "UNKNOWN")
+        self.assertIn("Checks access denied", result["errors"][0])
+
+    @patch("services.provider_api._get_json_with_retry")
     def test_bitbucket_commit_statuses_successful(self, mock_get_json):
         mock_get_json.return_value = {
             "values": [

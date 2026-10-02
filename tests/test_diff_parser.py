@@ -4,6 +4,16 @@ from ui.diff_parser import parse_unified_diff, DiffFile, DiffHunk, DiffLine
 
 
 class DiffParserTests(unittest.TestCase):
+    def test_header_like_code_lines_keep_their_line_numbers(self):
+        files = parse_unified_diff(
+            "diff --git a/doc.txt b/doc.txt\n--- a/doc.txt\n+++ b/doc.txt\n"
+            "@@ -1,2 +1,2 @@\n--- old heading\n+++ new heading\n unchanged\n"
+        )
+        self.assertEqual((files[0].additions, files[0].deletions), (1, 1))
+        lines = files[0].hunks[0].lines
+        self.assertEqual([line.content for line in lines], ["-- old heading", "++ new heading", "unchanged"])
+        self.assertEqual((lines[-1].old_line_num, lines[-1].new_line_num), (2, 2))
+
     def test_parse_empty_diff(self):
         self.assertEqual(parse_unified_diff(""), [])
         self.assertEqual(parse_unified_diff("   \n  "), [])

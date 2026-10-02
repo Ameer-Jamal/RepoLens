@@ -249,6 +249,8 @@ jobs:
     name: Publish GitHub Release
     needs: [prepare-release, build-wheels, build-desktop]
     runs-on: ubuntu-latest
+    env:
+      HAS_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -292,9 +294,8 @@ jobs:
       - name: Publish to PyPI (if PYPI_API_TOKEN configured)
         if: env.HAS_PYPI_TOKEN == 'true'
         env:
-          HAS_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN != '' }}
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           python -m pip install twine
-          twine upload release-assets/*.whl release-assets/*.tar.gz --skip-existing
+          twine upload release-assets/*.whl release-assets/repolens-*.tar.gz --skip-existing

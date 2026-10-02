@@ -338,12 +338,8 @@ class RepoLensMCPBackend:
         except Exception:
             effective_repo_dir = (repo.get("local_dir") or repo_dir or "").strip()
             target_id = pr.get("id") or pr_id
-            try:
-                raw_diff = self.pr_service.get_pull_request_diff_text(repo, target_id)
-                diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
-            except Exception:
-                if not ensure_checkout and not effective_repo_dir:
-                    raise
+            raw_diff = self.pr_service.get_pull_request_diff_text(repo, target_id)
+            diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
 
         return {
             "repository": self._repo_identity(repo),

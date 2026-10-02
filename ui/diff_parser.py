@@ -97,7 +97,7 @@ def parse_unified_diff(diff_text: str) -> list[DiffFile]:
             current_file.change_type = "R"
             i += 1
             continue
-        elif line.startswith("--- "):
+        elif current_hunk is None and line.startswith("--- "):
             raw_path = line[4:].strip()
             if raw_path.startswith("a/"):
                 current_file.old_path = raw_path[2:]
@@ -106,7 +106,7 @@ def parse_unified_diff(diff_text: str) -> list[DiffFile]:
                 current_file.change_type = "A"
             i += 1
             continue
-        elif line.startswith("+++ "):
+        elif current_hunk is None and line.startswith("+++ "):
             raw_path = line[4:].strip()
             if raw_path.startswith("b/"):
                 current_file.new_path = raw_path[2:]

@@ -989,6 +989,7 @@ class PRReviewTab(QWidget):
         if commit_hash:
             try:
                 ci_status = self.pr_service.get_pull_request_statuses(repo, commit_hash)
+                warnings.extend(f"CI status: {error}" for error in ci_status.get("errors", []))
             except Exception as exc:
                 warnings.append(f"CI status: {exc}")
                 ci_status = {"state": "UNKNOWN", "total_count": 0, "statuses": []}
@@ -1049,7 +1050,7 @@ class PRReviewTab(QWidget):
                 "QPushButton { background-color: #451a03; color: #fbbf24; border: 1px solid #d97706; border-radius: 5px; padding: 3px 8px; font-size: 11px; font-weight: 700; }"
             )
         else:
-            self.ci_badge.setText("CI: No checks")
+            self.ci_badge.setText("CI: Unavailable" if ci_data.get("errors") or ci_state == "UNKNOWN" else "CI: No checks")
             self.ci_badge.setStyleSheet(
                 "QPushButton { background-color: #1e2433; color: #94a3b8; border: 1px solid #2e384d; border-radius: 5px; padding: 3px 8px; font-size: 11px; font-weight: 600; }"
             )
@@ -1220,39 +1221,42 @@ class PRReviewTab(QWidget):
     def _on_reply_submitted(self, parent_comment_id: str, reply_body: str):
         if not self._current_pr or not self._current_repo:
             return
-        pr_id = str(self._current_pr.get("id") or "")
-        try:
-            self.status_bar.setText("Posting reply...")
-            self.comment_service.reply_to_comment(
-                self._current_repo,
-                pr_id,
-                parent_comment_id,
-                reply_body,
-            )
-            self.status_bar.setText("Reply posted successfully!")
-            # Refresh review to update threads
-            if self._current_pr:
-                self.load_pull_request(self._current_pr, self._current_repo)
-        except Exception as exc:
-            QMessageBox.warning(self, "Reply Error", f"Failed to post reply:\n{exc}")
-            self.status_bar.setText("Failed to post reply.")
+        repo, pr = self._current_repo, self._current_pr
+        pr_id = str(pr.get("id") or "")
+        self._run_comment_action(
+            lambda: self.comment_service.reply_to_comment(repo, pr_id, parent_comment_id, reply_body),
+            repo, pr, "Posting reply...", "Reply posted successfully!", "Reply Error",
+        )
 
     def _on_resolve_toggled(self, comment_id: str, unresolve: bool):
         if not self._current_pr or not self._current_repo:
             return
-        pr_id = str(self._current_pr.get("id") or "")
+        repo, pr = self._current_repo, self._current_pr
+        pr_id = str(pr.get("id") or "")
         action = "Reopening" if unresolve else "Resolving"
-        try:
-            self.status_bar.setText(f"{action} thread...")
-            self.comment_service.resolve_comment(
-                self._current_repo,
-                pr_id,
-                comment_id,
-                unresolve=unresolve,
-            )
-            self.status_bar.setText(f"Thread {'reopened' if unresolve else 'resolved'}!")
-            if self._current_pr:
-                self.load_pull_request(self._current_pr, self._current_repo)
-        except Exception as exc:
-            QMessageBox.warning(self, "Resolution Error", f"Failed to toggle resolution:\n{exc}")
-            self.status_bar.setText("Resolution toggle failed.")
+        self._run_comment_action(
+            lambda: self.comment_service.resolve_comment(repo, pr_id, comment_id, unresolve=unresolve),
+            repo, pr, f"{action} thread...", f"Thread {'reopened' if unresolve else 'resolved'}!",
+            "Resolution Error",
+        )
+
+    def _run_comment_action(self, action, repo, pr, pending, success, error_title):
+        self.status_bar.setText(pending)
+
+        def on_result(_result):
+            if self._current_pr is pr and self._current_repo is repo:
+                self.status_bar.setText(success)
+                self.load_pull_request(pr, repo)
+
+        def on_error(exc):
+            if self._current_pr is pr and self._current_repo is repo:
+                self.status_bar.setText(f"{error_title}: {exc}")
+                QMessageBox.warning(self, error_title, str(exc))
+
+        if self.task_runner:
+            self.task_runner.run(action, description=pending, on_result=on_result, on_error=on_error)
+        else:
+            try:
+                on_result(action())
+            except Exception as exc:
+                on_error(exc)

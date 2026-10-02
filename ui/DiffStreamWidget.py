@@ -247,7 +247,7 @@ class DiffFileCard(QFrame):
         formatter = HtmlFormatter(nowrap=True, noclasses=True, style="github-dark")
 
         # Map comments by line number
-        comments_by_line: dict[int, list[dict[str, Any]]] = {}
+        comments_by_line: dict[tuple[str, int], list[dict[str, Any]]] = {}
         file_level_comments: list[dict[str, Any]] = []
 
         for c in self.comments:
@@ -256,7 +256,8 @@ class DiffFileCard(QFrame):
             if line_num is not None:
                 try:
                     line_int = int(line_num)
-                    comments_by_line.setdefault(line_int, []).append(c)
+                    side = "LEFT" if str(c.get("side") or "RIGHT").upper() in {"LEFT", "FROM"} else "RIGHT"
+                    comments_by_line.setdefault((side, line_int), []).append(c)
                 except (ValueError, TypeError):
                     file_level_comments.append(c)
             else:
@@ -282,15 +283,20 @@ class DiffFileCard(QFrame):
 
             for line in hunk.lines:
                 current_chunk_lines.append(line)
-                target_line = line.new_line_num if line.new_line_num is not None else line.old_line_num
+                locations = []
+                if line.old_line_num is not None:
+                    locations.append(("LEFT", line.old_line_num))
+                if line.new_line_num is not None:
+                    locations.append(("RIGHT", line.new_line_num))
+                threads = [thread for location in locations for thread in comments_by_line.pop(location, [])]
 
-                if target_line is not None and target_line in comments_by_line:
+                if threads:
                     # Flush current lines to a text browser
                     self._add_lines_browser(current_chunk_lines, hunk.header, lexer, formatter)
                     current_chunk_lines = []
 
                     # Add comment card widgets for this line
-                    for thread in comments_by_line.pop(target_line):
+                    for thread in threads:
                         c_widget = PRCommentCardWidget(thread, self.content_container, typography=self.typography)
                         c_widget.replySubmitted.connect(self.replySubmitted.emit)
                         c_widget.resolveToggled.connect(self.resolveToggled.emit)

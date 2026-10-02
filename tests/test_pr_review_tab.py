@@ -1,6 +1,6 @@
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QApplication, QProgressBar
 
@@ -36,6 +36,30 @@ class PRReviewTabTests(unittest.TestCase):
     def setUp(self):
         self.config = _MockConfig()
         self.typography = TypographyController(self.config)
+
+    def test_comment_actions_run_in_background_and_do_not_reload_another_pr(self):
+        runner = Mock()
+        tab = PRReviewTab(self.config, runner)
+        pr = {"id": "42"}
+        repo = self.config.get_active_repository()
+        tab._current_pr, tab._current_repo = pr, repo
+        with patch.object(tab.comment_service, "reply_to_comment") as reply, patch.object(
+            tab.comment_service, "resolve_comment"
+        ) as resolve, patch.object(tab, "load_pull_request") as reload:
+            tab._on_reply_submitted("101", "Fixed")
+            tab._on_resolve_toggled("101", False)
+            reply.assert_not_called()
+            resolve.assert_not_called()
+            calls = runner.run.call_args_list
+            calls[0].args[0]()
+            reply.assert_called_once_with(repo, "42", "101", "Fixed")
+            calls[1].args[0]()
+            resolve.assert_called_once_with(repo, "42", "101", unresolve=False)
+            calls[0].kwargs["on_result"]({})
+            reload.assert_called_once_with(pr, repo)
+            tab._current_pr = {"id": "43"}
+            calls[1].kwargs["on_result"]({})
+            self.assertEqual(reload.call_count, 1)
 
     def test_pr_comment_card_widget(self):
         thread_data = {
@@ -95,6 +119,20 @@ index 1234567..89abcdef 100644
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0]["path"], "services/auth.py")
         self.assertEqual(summaries[0]["comment_count"], 1)
+
+    def test_inline_comments_on_opposite_sides_attach_to_their_own_lines(self):
+        stream = DiffStreamWidget(self.typography)
+        stream.set_diff_content(
+            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n",
+            {"app.py": [
+                {"comment_id": "right", "line": 1, "side": "RIGHT", "body": "New line"},
+                {"comment_id": "left", "line": 1, "side": "LEFT", "body": "Old line"},
+            ]},
+        )
+        card = stream._file_cards["app.py"]
+        self.assertEqual([widget.root_comment_id for widget in card._comment_widgets], ["left", "right"])
+        self.assertEqual([browser._diff_lines[0].line_type for browser in card._text_browsers], ["del", "add"])
 
     def test_diff_changes_use_gutter_accents_and_fit_large_type(self):
         self.typography.set_font_size(21)

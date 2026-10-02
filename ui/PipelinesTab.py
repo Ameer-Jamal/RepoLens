@@ -25,6 +25,9 @@ class PipelinesTab(QWidget):
         self._request = 0
         self._branch_request = 0
         self._run_request = 0
+        self._runs_request = 0
+        self._log_request = 0
+        self._dispatching = False
         self._current_run = ""
         self._current_url = ""
         self._loading = False
@@ -162,7 +165,19 @@ class PipelinesTab(QWidget):
         self.progress.setVisible(busy)
         self.retry_btn.setVisible(error)
         self._loading = busy
-        self.run_btn.setEnabled(not busy and isinstance(self.pipeline_combo.currentData(), dict))
+        self.run_btn.setEnabled(not busy and not self._dispatching and isinstance(self.pipeline_combo.currentData(), dict))
+
+    def _clear_run_view(self):
+        self._run_request += 1
+        self._log_request += 1
+        self._current_run = ""
+        self._current_url = ""
+        if hasattr(self, "timer"):
+            self.timer.stop()
+        self.steps_list.clear()
+        self.log_text.clear()
+        self.open_btn.setEnabled(False)
+        self.run_status.setText("Select a run to view its status and jobs.")
 
     def refresh_repositories(self, preferred=None, *, extra=None, force=False):
         current = preferred or self.repo_combo.currentData()
@@ -268,9 +283,7 @@ class PipelinesTab(QWidget):
         self.pipeline_combo.blockSignals(False)
         self.pipeline_combo.setEnabled(False)
         self.runs_list.clear()
-        self.steps_list.clear()
-        self.log_text.clear()
-        self.timer.stop() if hasattr(self, "timer") else None
+        self._clear_run_view()
         if not repo:
             return
         self._set_status(f"Loading remote branches for {repo.get('owner')}/{repo.get('slug')}...", busy=True)
@@ -303,6 +316,7 @@ class PipelinesTab(QWidget):
             self._branch_changed()
 
     def _branch_changed(self, *_):
+        self._clear_run_view()
         self._request += 1
         token = self._request
         repo, branch = self.repo_combo.currentData(), self.branch_combo.currentData()
@@ -334,10 +348,11 @@ class PipelinesTab(QWidget):
         self.refresh_runs()
 
     def _pipeline_changed(self, *_):
+        self._clear_run_view()
         pipeline = self.pipeline_combo.currentData() or {}
         self._load_parameter_form()
         self.add_param_btn.setEnabled(pipeline.get("kind") == "custom")
-        self.run_btn.setEnabled(bool(pipeline) and not self._loading)
+        self.run_btn.setEnabled(bool(pipeline) and not self._loading and not self._dispatching)
         self.refresh_runs()
 
     def _load_parameter_form(self):
@@ -409,6 +424,8 @@ class PipelinesTab(QWidget):
         return values
 
     def run_pipeline(self):
+        if self._dispatching:
+            return
         repo = self.repo_combo.currentData()
         pipeline = self.pipeline_combo.currentData()
         branch = self.branch_combo.currentData()
@@ -426,20 +443,35 @@ class PipelinesTab(QWidget):
         if QMessageBox.question(self, "Review pipeline run", summary, QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
         remember = self.remember_values.isChecked()
+        context = (self._repo_key(repo), branch, pipeline["id"], self._request)
+        def still_selected():
+            return context == (self._repo_key(self.repo_combo.currentData()), self.branch_combo.currentData(),
+                               (self.pipeline_combo.currentData() or {}).get("id"), self._request)
+        self._dispatching = True
         self._set_status("Starting pipeline...", busy=True)
         def launched(result):
+            self._dispatching = False
             if remember:
                 self.config.set_pipeline_parameters(repo, branch, pipeline["id"], values)
                 if (self._repo_key(self.repo_combo.currentData()) == self._repo_key(repo)
                         and self.branch_combo.currentData() == branch
                         and (self.pipeline_combo.currentData() or {}).get("id") == pipeline["id"]):
                     self.forget_values_btn.setEnabled(bool(values))
+            if not still_selected():
+                self.run_btn.setEnabled(not self._loading and isinstance(self.pipeline_combo.currentData(), dict))
+                return
             self._set_status(f"Pipeline started. Run ID: {result['run_id'] or 'pending'}")
+            self._current_url = result.get("url") or ""
+            self.open_btn.setEnabled(bool(self._current_url))
             if result["run_id"]:
                 self._current_run = result["run_id"]
                 self.refresh_run()
             self.refresh_runs()
         def failed(exc):
+            self._dispatching = False
+            if not still_selected():
+                self.run_btn.setEnabled(not self._loading and isinstance(self.pipeline_combo.currentData(), dict))
+                return
             self._set_status(f"Could not start pipeline: {exc}", error=True)
             QMessageBox.warning(self, "Pipeline run failed", str(exc))
         self.runner.run(self.service.run_pipeline, repo, branch, pipeline["id"], kind=pipeline["kind"],
@@ -451,12 +483,19 @@ class PipelinesTab(QWidget):
             return
         pipeline = self.pipeline_combo.currentData() or {}
         branch = self.branch_combo.currentData() or ""
+        self._runs_request += 1
+        token = self._runs_request
         key = (self._repo_key(repo), branch, pipeline.get("id"))
+        self.runs_list.blockSignals(True)
         self.runs_list.clear()
         self.runs_list.addItem("Loading recent runs...")
+        self.runs_list.blockSignals(False)
+        def still_selected():
+            return token == self._runs_request and key == (
+                self._repo_key(self.repo_combo.currentData()), self.branch_combo.currentData() or "",
+                (self.pipeline_combo.currentData() or {}).get("id"))
         def loaded(runs):
-            if key != (self._repo_key(self.repo_combo.currentData()), self.branch_combo.currentData() or "",
-                       (self.pipeline_combo.currentData() or {}).get("id")):
+            if not still_selected():
                 return
             selected = self._current_run
             self.runs_list.blockSignals(True)
@@ -472,9 +511,10 @@ class PipelinesTab(QWidget):
             self.runs_list.blockSignals(False)
         self.runner.run(self.service.list_runs, repo, pipeline.get("id") or "", branch,
                         description="Load pipeline runs", on_result=loaded,
-                        on_error=lambda exc: self.run_status.setText(f"Could not load runs: {exc}"))
+                        on_error=lambda exc: self.run_status.setText(f"Could not load runs: {exc}") if still_selected() else None)
 
     def _run_selected(self, item, _previous):
+        self._clear_run_view()
         if item:
             self._current_run = (item.data(Qt.UserRole) or {}).get("run_id") or ""
             self.log_text.clear()
@@ -486,8 +526,11 @@ class PipelinesTab(QWidget):
             return
         self._run_request += 1
         token = self._run_request
+        def still_selected():
+            return (token == self._run_request and run_id == self._current_run
+                    and self._repo_key(repo) == self._repo_key(self.repo_combo.currentData()))
         def loaded(run):
-            if token != self._run_request:
+            if not still_selected():
                 return
             self.run_status.setText(f"Run {run_id}: {run['status']} {run['conclusion']}")
             self._current_url = run["url"]
@@ -509,19 +552,24 @@ class PipelinesTab(QWidget):
             else:
                 self.timer.start()
         self.runner.run(self.service.get_run, repo, run_id, description="Load pipeline run",
-                        on_result=loaded, on_error=lambda exc: self.run_status.setText(f"Could not load run: {exc}"))
+                        on_result=loaded, on_error=lambda exc: self.run_status.setText(f"Could not load run: {exc}") if still_selected() else None)
 
     def _step_selected(self, item, _previous):
+        self._log_request += 1
+        token = self._log_request
         if not item or not self._current_run:
             return
         repo, run_id, step_id = self.repo_combo.currentData(), self._current_run, item.data(Qt.UserRole)
         self.log_text.setPlainText("Loading log...")
-        def loaded(result):
+        def still_selected():
             current = self.steps_list.currentItem()
-            if current and current.data(Qt.UserRole) == step_id and self._current_run == run_id:
+            return (token == self._log_request and current and current.data(Qt.UserRole) == step_id
+                    and self._current_run == run_id and self._repo_key(repo) == self._repo_key(self.repo_combo.currentData()))
+        def loaded(result):
+            if still_selected():
                 self.log_text.setPlainText(result["text"] + ("\n[Log truncated]" if result["truncated"] else ""))
         self.runner.run(self.service.get_log, repo, run_id, step_id, description="Load pipeline log",
-                        on_result=loaded, on_error=lambda exc: self.log_text.setPlainText(f"Could not load log: {exc}"))
+                        on_result=loaded, on_error=lambda exc: self.log_text.setPlainText(f"Could not load log: {exc}") if still_selected() else None)
 
     def _error(self, token, exc):
         if token == self._request:

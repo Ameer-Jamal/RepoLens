@@ -101,6 +101,50 @@ class PipelinesTabTests(unittest.TestCase):
             self.tab.run_pipeline()
         self.service.run_pipeline.assert_not_called()
 
+    def test_branch_change_discards_pending_run_and_log_results(self):
+        self.tab.runs_list.setCurrentRow(0)
+        runner = DeferredRunner()
+        self.tab.runner = runner
+        self.tab.refresh_run()
+        self.tab.steps_list.setCurrentRow(0)
+        run_call = next(call for call in runner.calls if call[0] is self.service.get_run)
+        log_call = next(call for call in runner.calls if call[0] is self.service.get_log)
+        self.tab.branch_combo.setCurrentIndex(1)
+        run_call[2]["on_result"](self.service.get_run.return_value)
+        log_call[2]["on_error"](RuntimeError("old log failed"))
+        self.assertEqual(self.tab._current_run, "")
+        self.assertEqual(self.tab.steps_list.count(), 0)
+        self.assertEqual(self.tab.log_text.toPlainText(), "")
+        self.assertFalse(self.tab.open_btn.isEnabled())
+        self.assertFalse(self.tab.timer.isActive())
+
+    def test_dispatch_completion_stays_with_reviewed_selection(self):
+        runner = DeferredRunner()
+        self.tab.runner = runner
+        self.tab.remember_values.setChecked(True)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            self.tab.run_pipeline()
+            self.tab.run_pipeline()
+        dispatches = [call for call in runner.calls if call[0] is self.service.run_pipeline]
+        self.assertEqual(len(dispatches), 1)
+        self.tab.branch_combo.setCurrentIndex(1)
+        dispatches[0][2]["on_result"]({"run_id": "old-run", "url": "https://github.com/old-run"})
+        self.assertEqual(self.tab._current_run, "")
+        self.assertNotIn("old-run", self.tab.status.text())
+        self.assertEqual(self.config.get_pipeline_parameters(REPO, "main", "7"), {"suite": "smoke"})
+
+    def test_recent_runs_ignore_out_of_order_results(self):
+        runner = DeferredRunner()
+        self.tab.runner = runner
+        self.tab.refresh_runs()
+        self.tab.refresh_runs()
+        calls = [call for call in runner.calls if call[0] is self.service.list_runs]
+        calls[-1][2]["on_result"]([])
+        calls[0][2]["on_error"](RuntimeError("stale failure"))
+        calls[0][2]["on_result"](self.service.list_runs.return_value)
+        self.assertIn("No recent runs", self.tab.runs_list.item(0).text())
+        self.assertNotIn("stale failure", self.tab.run_status.text())
+
     def test_remember_values_after_success_and_forget(self):
         self.tab.parameters.cellWidget(0, 1).setCurrentText("full")
         self.tab.remember_values.setChecked(True)

@@ -1169,9 +1169,13 @@ class BitbucketProviderClient(ProviderClient):
             f"https://api.bitbucket.org/2.0/repositories/"
             f"{repository.workspace}/{repository.slug}/commit/{commit_hash}/statuses"
         )
+        items = []
         try:
-            data = _get_json_with_retry(url, auth=(username, password), timeout=20)
-        except Exception:
+            while url:
+                data = _get_json_with_retry(url, auth=(username, password), timeout=20)
+                items.extend(data.get("values", []))
+                url = data.get("next")
+        except Exception as exc:
             return {
                 "state": "UNKNOWN",
                 "total_count": 0,
@@ -1179,8 +1183,8 @@ class BitbucketProviderClient(ProviderClient):
                 "failed_count": 0,
                 "inprogress_count": 0,
                 "statuses": [],
+                "errors": [str(exc)],
             }
-        items = data.get("values", []) if isinstance(data, dict) else []
         statuses = []
         successful_count = 0
         failed_count = 0
@@ -1385,6 +1389,18 @@ class GitHubProviderClient(ProviderClient):
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
+
+    def _status_pages(self, url: str, key: str) -> list[dict]:
+        records = []
+        page = 1
+        while True:
+            data = _get_json_with_retry(f"{url}?per_page=100&page={page}", headers=self._headers(), timeout=20)
+            batch = data.get(key, [])
+            records.extend(batch)
+            total = data.get("total_count")
+            if not batch or (total is not None and len(records) >= total) or (total is None and len(batch) < 100):
+                return records
+            page += 1
 
     def _owner(self) -> str:
         return (self.config.get_github_owner() or "").strip()
@@ -1792,13 +1808,13 @@ class GitHubProviderClient(ProviderClient):
         failed_count = 0
         inprogress_count = 0
 
+        errors = []
         # 1. Query check runs
         check_runs_url = (
             f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/commits/{commit_hash}/check-runs"
         )
         try:
-            data = _get_json_with_retry(check_runs_url, headers=self._headers(), timeout=20)
-            runs = data.get("check_runs", []) if isinstance(data, dict) else []
+            runs = self._status_pages(check_runs_url, "check_runs")
             for run in runs:
                 status = (run.get("status") or "").lower()
                 conclusion = (run.get("conclusion") or "").lower()
@@ -1824,16 +1840,15 @@ class GitHubProviderClient(ProviderClient):
                     "created_on": run.get("started_at") or "",
                     "updated_on": run.get("completed_at") or "",
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"Check runs: {exc}")
 
         # 2. Query combined commit status
         status_url = (
             f"https://api.github.com/repos/{repository.workspace}/{repository.slug}/commits/{commit_hash}/status"
         )
         try:
-            status_data = _get_json_with_retry(status_url, headers=self._headers(), timeout=20)
-            raw_statuses = status_data.get("statuses", []) if isinstance(status_data, dict) else []
+            raw_statuses = self._status_pages(status_url, "statuses")
             for item in raw_statuses:
                 st = (item.get("state") or "").lower()
                 if st == "success":
@@ -1856,13 +1871,15 @@ class GitHubProviderClient(ProviderClient):
                     "created_on": item.get("created_at") or "",
                     "updated_on": item.get("updated_at") or "",
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"Commit statuses: {exc}")
 
         if failed_count > 0:
             overall_state = "FAILED"
         elif inprogress_count > 0:
             overall_state = "INPROGRESS"
+        elif errors:
+            overall_state = "UNKNOWN"
         elif statuses and successful_count == len(statuses):
             overall_state = "SUCCESSFUL"
         else:
@@ -1875,6 +1892,7 @@ class GitHubProviderClient(ProviderClient):
             "failed_count": failed_count,
             "inprogress_count": inprogress_count,
             "statuses": statuses,
+            "errors": errors,
         }
 
     def approve_pull_request(
