@@ -7,7 +7,7 @@ import time
 import webbrowser
 
 import requests
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThreadPool
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit,
                              QPushButton, QFileDialog, QMessageBox, QHBoxLayout, QListWidget,
                              QListWidgetItem, QTabWidget, QRadioButton, QButtonGroup, QProgressDialog, QComboBox)
@@ -24,6 +24,9 @@ from services.pull_request_service import PullRequestService
 from services.RepositoryProvider import RepositoryProvider
 from ui.SettingsTab import SettingsTab
 from ui.TaskRunner import TaskRunner
+from ui.PRReviewTab import PRReviewTab
+from ui.PipelinesTab import PipelinesTab
+from ui.theme import apply_theme
 
 DEFAULT_BITBUCKET_WORKSPACE = os.environ.get('BITBUCKET_WORKSPACE', 'example-workspace').strip() or 'example-workspace'
 
@@ -79,6 +82,9 @@ class RepoLens(QWidget):
 
         # Build tabs
         self.pr_tab_widget = self.prExtractDiffWidget()
+        self.pr_review_tab = PRReviewTab(self.config_manager, self.task_runner)
+        self.pipelines_tab = PipelinesTab(self.config_manager, self.task_runner)
+        self.pr_review_tab.pipelineRequested.connect(self._open_pipeline_for_pr)
         self.branch_viewer = BranchCommitViewer(self.config_manager, self.task_runner)
         self.create_pr_tab = CreatePRTab(self.config_manager, self.task_runner)
         self.settings_tab = SettingsTab(self.config_manager, self.task_runner)
@@ -86,9 +92,12 @@ class RepoLens(QWidget):
         self.settings_tab.providerChanged.connect(self._on_provider_updated)
         self.settings_tab.settingsUpdated.connect(self._on_settings_updated)
         self.settings_tab.activeRepositoriesChanged.connect(self._on_active_repositories_selected)
+        self.settings_tab.themeChanged.connect(self._apply_selected_theme)
 
-        # Add both tabs to the QTabWidget
+        # Add tabs to the QTabWidget
         self.tabs.addTab(self.pr_tab_widget, "PR Lens")  # Default tab
+        self.tabs.addTab(self.pr_review_tab, "PR Review")
+        self.tabs.addTab(self.pipelines_tab, "Pipelines")
         self.tabs.addTab(self.branch_viewer, "Branch Commit Viewer")
         self.tabs.addTab(self.create_pr_tab, "Create PR")
         self.tabs.addTab(self.contribution_history_tab, "Contribution History")
@@ -101,8 +110,15 @@ class RepoLens(QWidget):
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
 
+        self._apply_selected_theme()
+
         self.apply_repo_config()
         self._initialize_active_repository()
+
+    def _apply_selected_theme(self):
+        app = QApplication.instance()
+        if app:
+            apply_theme(app, self.config_manager.get_theme())
 
     def initUI(self):
         self.setWindowTitle('RepoLens')
@@ -142,7 +158,7 @@ class RepoLens(QWidget):
         # List of Pull Requests
         self.pr_list = QListWidget(self)
         self.pr_list.itemClicked.connect(self.onPRClick)
-        self.pr_list.itemDoubleClicked.connect(self.generateDiff)
+        self.pr_list.itemDoubleClicked.connect(self.openPRInReviewTab)
         self.pr_list.itemSelectionChanged.connect(self._update_generate_button_text)
         self.pr_list.verticalScrollBar().valueChanged.connect(self._on_pr_list_scrolled)
         self.pr_list.setItemDelegate(PRListDelegate(self.pr_list))
@@ -210,8 +226,28 @@ class RepoLens(QWidget):
         repo_filter_layout.addWidget(self.repo_filter_combo)
         layout.addLayout(repo_filter_layout)
 
+        # Review in App & Generate Diff Buttons
+        btn_layout = QHBoxLayout()
+        self.review_button = QPushButton('Review PR in App', self)
+        self.review_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #059669;"
+            "color: white;"
+            "font-weight: 700;"
+            "border: 1px solid #047857;"
+            "border-radius: 6px;"
+            "padding: 6px 12px;"
+            "}"
+            "QPushButton:hover { background-color: #10b981; }"
+            "QPushButton:pressed { background-color: #047857; }"
+            "QPushButton:disabled { background-color: #334155; color: #64748b; }"
+        )
+        self.review_button.setToolTip("Open this pull request in the dedicated PR Review tab with syntax highlighting and comments.")
+        self.review_button.clicked.connect(self.openPRInReviewTab)
+        btn_layout.addWidget(self.review_button)
+
         # Generate Diff Button
-        self.run_button = QPushButton('Generate Diff', self)
+        self.run_button = QPushButton('Export Diff File', self)
         self.run_button.setStyleSheet(
             "QPushButton {"
             "background-color: #0b63ce;"
@@ -226,7 +262,8 @@ class RepoLens(QWidget):
             "QPushButton:disabled { background-color: #7aa8df; color: #f3f7ff; }"
         )
         self.run_button.clicked.connect(self.generateDiff)
-        layout.addWidget(self.run_button)
+        btn_layout.addWidget(self.run_button)
+        layout.addLayout(btn_layout)
         self._run_button_label = self.run_button.text()
         self._update_list_button_text()
         self._update_generate_button_text()
@@ -574,6 +611,8 @@ class RepoLens(QWidget):
             item.setText(descriptor)
             self.pr_list.addItem(item)
         self.pr_list.setUpdatesEnabled(True)
+        if hasattr(self, "pr_review_tab"):
+            self.pr_review_tab.sync_prs(getattr(self, "prs", []))
 
     def searchPRs(self):
         """Filter PRs based on the search input."""
@@ -701,6 +740,7 @@ class RepoLens(QWidget):
         self._pr_cache.clear()
         self.apply_repo_config()
         self.contribution_history_tab.apply_provider_context()
+        self.pipelines_tab.refresh_repositories()
 
     def _on_provider_updated(self, provider):
         provider = (provider or 'bitbucket').lower()
@@ -715,6 +755,11 @@ class RepoLens(QWidget):
         self.pr_list.clear()
         self.apply_repo_config()
         self.contribution_history_tab.apply_provider_context()
+        self.pipelines_tab.refresh_repositories()
+
+    def _open_pipeline_for_pr(self, repo, branch):
+        self.tabs.setCurrentWidget(self.pipelines_tab)
+        self.pipelines_tab.select_context(repo, branch)
 
     def _on_tab_changed(self, index):
         if self._handling_tab_change:
@@ -724,6 +769,11 @@ class RepoLens(QWidget):
         previous_widget = self.tabs.widget(self._previous_tab_index)
         current_widget = self.tabs.widget(index)
         self._previous_tab_index = index
+
+        if hasattr(self, "pr_review_tab") and current_widget is self.pr_review_tab:
+            self.pr_review_tab.on_tab_activated(prs=getattr(self, "prs", []))
+        if current_widget is self.pipelines_tab:
+            self.pipelines_tab.refresh_repositories()
 
         if previous_widget is not self.settings_tab or current_widget is self.settings_tab:
             return
@@ -990,6 +1040,23 @@ class RepoLens(QWidget):
             self.commit_input.setText(commit_hash)
             self.config_manager.set_commit_hashes(commit_hash)
 
+    def openPRInReviewTab(self, item=None):
+        """Switch to PR Review tab and load the selected PR diff and comments."""
+        try:
+            if item is None or isinstance(item, bool):
+                item = self.pr_list.currentItem()
+            if item is not None:
+                pr_data = item.data(Qt.UserRole)
+                if isinstance(pr_data, dict):
+                    if hasattr(self, "pr_review_tab"):
+                        self.pr_review_tab.sync_prs(getattr(self, "prs", []))
+                        self.pr_review_tab.load_pull_request(pr_data)
+                        self.tabs.setCurrentWidget(self.pr_review_tab)
+                        return
+            QMessageBox.information(self, "PR Review", "Please select a pull request to review.")
+        except Exception as exc:
+            QMessageBox.critical(self, "PR Review Error", f"Failed to open PR review:\n{exc}")
+
     @staticmethod
     def openFile(file_path, app_path=''):
         app_path = (app_path or '').strip()
@@ -1216,6 +1283,7 @@ class RepoLens(QWidget):
 
             self.config_manager.set_selected_repositories(prepared)
             self.config_manager.set_active_repository(active_repo)
+            self.pipelines_tab.refresh_repositories()
             self._pr_cache.clear()
             self.contribution_history_tab.apply_provider_context()
             self.apply_repo_config()
@@ -1488,12 +1556,14 @@ class RepoLens(QWidget):
 def main() -> int:
     import sys
     app = QApplication(sys.argv)
+    app.aboutToQuit.connect(QThreadPool.globalInstance().waitForDone)
     repo_lens = RepoLens()
     repo_lens.show()
-    return app.exec_()
+    result = app.exec_()
+    QThreadPool.globalInstance().waitForDone()
+    return result
 
 
 if __name__ == '__main__':
     import sys
     sys.exit(main())
-

@@ -63,17 +63,18 @@ class PullRequestServiceTests(unittest.TestCase):
         self.assertEqual(records[0]["id"], 99)
 
     @patch("services.pull_request_service.requests.get")
-    def test_list_pull_requests_for_repo_uses_provider_query_for_developer(self, mock_get):
-        search_response = MagicMock()
-        search_response.json.return_value = {
-            "items": [
-                {
-                    "pull_request": {"url": "https://api.github.com/repos/openai/demo/pulls/99"},
-                }
-            ]
+    def test_list_pull_requests_for_repo_filters_developer_across_pages(self, mock_get):
+        first_response = MagicMock()
+        first_response.json.return_value = [{
+            "number": 98, "title": "Someone else's PR", "state": "open", "merged_at": None,
+            "head": {"ref": "feature/other"}, "base": {"ref": "main"},
+            "user": {"login": "someone-else"},
+        }]
+        first_response.headers = {
+            "Link": '<https://api.github.com/repos/openai/demo/pulls?page=2>; rel="next"'
         }
-        pr_response = MagicMock()
-        pr_response.json.return_value = {
+        second_response = MagicMock()
+        second_response.json.return_value = [{
             "number": 99,
             "title": "Mine",
             "state": "open",
@@ -84,8 +85,9 @@ class PullRequestServiceTests(unittest.TestCase):
             "user": {"login": "ajamal"},
             "html_url": "https://example/pr/99",
             "body": "Details",
-        }
-        mock_get.side_effect = [search_response, pr_response]
+        }]
+        second_response.headers = {}
+        mock_get.side_effect = [first_response, second_response]
 
         records, next_cursor = self.service.list_pull_requests_for_repo(
             self.repo,
@@ -94,8 +96,23 @@ class PullRequestServiceTests(unittest.TestCase):
         )
 
         self.assertIsNone(next_cursor)
-        self.assertEqual(records[0]["id"], 99)
-        self.assertIn("author:ajamal", mock_get.call_args_list[0].kwargs["params"]["q"])
+        self.assertEqual([record["id"] for record in records], [99])
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(mock_get.call_args_list[0].args[0], "https://api.github.com/repos/openai/demo/pulls")
+
+    def test_bitbucket_developer_filter_walks_all_pages(self):
+        repo = {"provider": "bitbucket", "id": "2", "owner": "workspace", "slug": "demo"}
+        first = [{"id": 1, "author": "Someone Else"}]
+        second = [{"id": 2, "author": "Alice Example", "author_username": "alice"}]
+        with patch.object(self.service, "_fetch_bitbucket_pull_requests_page",
+                          side_effect=[(first, "page-2"), (second, None)]) as fetch:
+            records, cursor = self.service.list_pull_requests_for_repo(
+                repo, filter_mode="all", developer="alice",
+            )
+        self.assertEqual([record["id"] for record in records], [2])
+        self.assertIsNone(cursor)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(fetch.call_args_list[1].kwargs["next_cursor"], "page-2")
 
     def test_bitbucket_query_expression_omits_author_fields_for_api_compatibility(self):
         expression = PullRequestService._bitbucket_query_expression(
@@ -450,4 +467,3 @@ class PullRequestServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

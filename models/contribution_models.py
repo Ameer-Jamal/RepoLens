@@ -40,7 +40,7 @@ class RepositoryRef:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RepositoryRef":
         workspace = value.get("workspace") or value.get("owner") or ""
-        slug = value.get("slug") or value.get("repo") or ""
+        slug = value.get("slug") or value.get("repo") or value.get("name") or ""
         full_name = value.get("full_name") or ""
         if not full_name and workspace and slug:
             full_name = f"{workspace}/{slug}"

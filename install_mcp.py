@@ -310,11 +310,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def validate_inputs(python_cmd: str, script_path: Path) -> None:
+def validate_inputs(python_cmd: str, script_path: Path, check_health: bool = True) -> None:
     if not script_path.exists():
         raise FileNotFoundError(f"RepoLens MCP server script not found: {script_path}")
     if not python_cmd.strip():
         raise ValueError("Python command cannot be empty.")
+    if check_health:
+        try:
+            completed = subprocess.run(
+                [python_cmd, str(script_path), "--help"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if completed.returncode != 0:
+                err = (completed.stderr or completed.stdout).strip()
+                raise RuntimeError(
+                    f"The Python interpreter '{python_cmd}' failed to load '{script_path}':\n{err}\n\n"
+                    f"Please ensure all required dependencies are installed:\n"
+                    f"  {python_cmd} -m pip install -r {readme_path().parent / 'requirements.txt'}"
+                )
+        except RuntimeError:
+            raise
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise RuntimeError(f"Unable to execute '{python_cmd}' to verify MCP server: {exc}") from exc
 
 
 def install_for_client(client: str, python_cmd: str, script_path: Path, cursor_scope: str) -> InstallResult:
@@ -334,7 +354,7 @@ def install_for_client(client: str, python_cmd: str, script_path: Path, cursor_s
 
 
 def print_results(results: list[InstallResult]) -> None:
-    print(f"RepoLens MCP installer")
+    print("RepoLens MCP installer")
     print(f"Server script: {server_script()}")
     print(f"README fallback: {readme_path()}")
     print("")

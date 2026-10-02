@@ -19,6 +19,7 @@ from services.pull_request_service import PullRequestService
 from services.pull_request_comment_service import PullRequestCommentService
 from services.pr_creation_service import PullRequestCreateRequest, PullRequestCreationService, PullRequestUpdateRequest
 from services.pr_patch_service import PullRequestFromChangesRequest, PullRequestPatchService
+from services.pipeline_service import PipelineService
 from services.scope_manager import ScopeManager
 
 try:
@@ -55,6 +56,38 @@ class RepoLensMCPBackend:
         self.pr_patch_service = PullRequestPatchService(self.config, creation_service=self.pr_creation_service)
         self.git_context_service = GitContextService()
         self.diff_service = DiffService()
+        self.pipeline_service = PipelineService(self.config)
+
+    def _pipeline_repo(self, provider="", workspace="", slug="", scope="", repo_dir=""):
+        return self.resolve_repository(provider=provider, workspace=workspace, slug=slug,
+                                       scope=scope, repo_dir=repo_dir, allow_direct=True)
+
+    def list_pipelines(self, branch: str, *, provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), "branch": branch,
+                "pipelines": self.pipeline_service.list_pipelines(repo, branch)}
+
+    def run_pipeline(self, branch: str, pipeline_id: str, *, kind="", inputs=None,
+                     provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), **self.pipeline_service.run_pipeline(
+            repo, branch, pipeline_id, kind=kind, inputs=inputs)}
+
+    def list_pipeline_runs(self, *, pipeline_id="", branch="", limit=30,
+                           provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), "runs": self.pipeline_service.list_runs(
+            repo, pipeline_id=pipeline_id, branch=branch, limit=limit)}
+
+    def get_pipeline_run(self, run_id: str, *, provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), **self.pipeline_service.get_run(repo, run_id)}
+
+    def get_pipeline_log(self, run_id: str, step_id: str, *, max_chars=256000,
+                         provider="", workspace="", slug="", scope="", repo_dir=""):
+        repo = self._pipeline_repo(provider, workspace, slug, scope, repo_dir)
+        return {"repository": self._repo_identity(repo), **self.pipeline_service.get_log(
+            repo, run_id, step_id, max_chars=max_chars)}
 
     def get_active_context(self) -> dict[str, Any]:
         return {
@@ -282,21 +315,44 @@ class RepoLensMCPBackend:
             allow_direct=True,
         )
         pr = self.pr_service.get_pull_request(repo, pr_id)
-        repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
-        result = self.diff_service.generate_pr_diff(pr, repo_dir)
-        diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+        effective_repo_dir = ""
+        diff_text = ""
+        truncated = False
+        merge_base = ""
+        resolved_source = pr.get("source_branch") or ""
+        resolved_destination = pr.get("destination_branch") or ""
+        source_commit = pr.get("source_commit") or ""
+        destination_commit = pr.get("destination_commit") or ""
+        merge_commit = pr.get("merge_commit") or ""
+
+        try:
+            effective_repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
+            result = self.diff_service.generate_pr_diff(pr, effective_repo_dir)
+            diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+            merge_base = result.merge_base
+            resolved_source = result.resolved_source
+            resolved_destination = result.resolved_destination
+            source_commit = result.source_commit or source_commit
+            destination_commit = result.destination_commit or destination_commit
+            merge_commit = result.merge_commit or merge_commit
+        except Exception:
+            effective_repo_dir = (repo.get("local_dir") or repo_dir or "").strip()
+            target_id = pr.get("id") or pr_id
+            raw_diff = self.pr_service.get_pull_request_diff_text(repo, target_id)
+            diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
+
         return {
             "repository": self._repo_identity(repo),
             "pr": pr,
-            "repo_dir": repo_dir,
+            "repo_dir": effective_repo_dir,
             "diff_text": diff_text,
             "truncated": truncated,
-            "merge_base": result.merge_base,
-            "resolved_source": result.resolved_source,
-            "resolved_destination": result.resolved_destination,
-            "source_commit": result.source_commit,
-            "destination_commit": result.destination_commit,
-            "merge_commit": result.merge_commit,
+            "merge_base": merge_base,
+            "resolved_source": resolved_source,
+            "resolved_destination": resolved_destination,
+            "source_commit": source_commit,
+            "destination_commit": destination_commit,
+            "merge_commit": merge_commit,
         }
 
     def get_commit_diff(
@@ -705,28 +761,53 @@ class RepoLensMCPBackend:
             slug=slug,
             repo_dir=repo_dir,
         )
-        repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
-        result = self.diff_service.generate_pr_diff(pr, repo_dir)
-        diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+        effective_repo_dir = ""
+        diff_text = ""
+        truncated = False
+        merge_base = ""
+        source_commit = pr.get("source_commit") or ""
+        destination_commit = pr.get("destination_commit") or ""
+        merge_commit = pr.get("merge_commit") or ""
+
+        try:
+            effective_repo_dir = self._repo_dir(repo, ensure_checkout=ensure_checkout)
+            result = self.diff_service.generate_pr_diff(pr, effective_repo_dir)
+            diff_text, truncated = self._truncate_text(result.diff_text, _clamp_diff_limit(max_chars))
+            merge_base = result.merge_base
+            source_commit = result.source_commit or source_commit
+            destination_commit = result.destination_commit or destination_commit
+            merge_commit = result.merge_commit or merge_commit
+        except Exception:
+            effective_repo_dir = (repo.get("local_dir") or repo_dir or "").strip()
+            pr_id = pr.get("id")
+            if pr_id is not None:
+                try:
+                    raw_diff = self.pr_service.get_pull_request_diff_text(repo, pr_id)
+                    diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
+                except Exception:
+                    if not ensure_checkout and not effective_repo_dir:
+                        raise
+            elif not effective_repo_dir:
+                raise
         
         response: dict[str, Any] = {
             "repository": self._repo_identity(repo),
             "pr": pr,
-            "repo_dir": repo_dir,
+            "repo_dir": effective_repo_dir,
             "diff_text": diff_text,
             "truncated": truncated,
-            "merge_base": result.merge_base,
-            "source_commit": result.source_commit,
-            "destination_commit": result.destination_commit,
-            "merge_commit": result.merge_commit,
+            "merge_base": merge_base,
+            "source_commit": source_commit,
+            "destination_commit": destination_commit,
+            "merge_commit": merge_commit,
         }
 
         if include_comments:
             comments_res = self.pr_comment_service.get_pull_request_comments(
                 repo,
                 pr.get("id"),
-                repo_dir=repo_dir,
-                include_code_context=True,
+                repo_dir=effective_repo_dir,
+                include_code_context=bool(effective_repo_dir),
             )
             response["comments"] = comments_res.get("comments", [])
             response["threads"] = comments_res.get("threads", [])
@@ -845,6 +926,82 @@ class RepoLensMCPBackend:
             "repository": self._repo_identity(repo),
             "pr_id": resolved_pr_id,
             "comment": comment,
+        }
+
+    def add_pr_comments(
+        self,
+        comments: list[dict[str, Any]],
+        *,
+        pr_id: str | int = "",
+        reference: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Post several general or inline comments to one pull request."""
+        if not isinstance(comments, list) or not comments:
+            raise ValueError("At least one comment is required.")
+
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        results: list[dict[str, Any]] = []
+        for index, item in enumerate(comments):
+            try:
+                if not isinstance(item, dict):
+                    raise ValueError("Comment must be an object with a body.")
+                file_path = item.get("file_path") or None
+                line = item.get("line")
+                if (file_path is None) != (line is None):
+                    raise ValueError("Inline comments require both 'file_path' and 'line'.")
+                if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 1):
+                    raise ValueError("Inline comment 'line' must be a positive integer.")
+                comment = self.pr_comment_service.add_comment(
+                    repo,
+                    resolved_pr_id,
+                    item.get("body"),
+                    file_path=file_path,
+                    line=line,
+                    side=item.get("side") or None,
+                )
+                results.append({"index": index, "success": True, "comment": comment})
+            except Exception as exc:  # Each provider write is independent; preserve partial results.
+                results.append({"index": index, "success": False, "error": str(exc)})
+
+        succeeded = sum(1 for result in results if result["success"])
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": resolved_pr_id,
+            "summary": {
+                "requested": len(results),
+                "succeeded": succeeded,
+                "failed": len(results) - succeeded,
+            },
+            "results": results,
         }
 
     def reply_to_pr_comment(
@@ -1151,7 +1308,11 @@ class RepoLensMCPBackend:
             desired_slug = desired_slug or specific_slug
 
         if allow_direct and provider and workspace and slug:
-            return self._direct_repository(provider=provider, workspace=workspace, slug=slug, repo_dir=repo_dir)
+            direct = self._direct_repository(provider=provider, workspace=workspace, slug=slug, repo_dir=repo_dir)
+            existing_dir = self._find_existing_local_dir(direct)
+            if existing_dir:
+                direct["local_dir"] = existing_dir
+            return direct
 
         if allow_direct and repo_dir:
             return self.git_context_service.resolve(repo_dir=repo_dir).repository_dict()
@@ -1316,10 +1477,47 @@ class RepoLensMCPBackend:
             return repositories[0]
         raise ValueError("Unable to resolve repository for pull request.")
 
+    def _find_existing_local_dir(self, repo: dict) -> str:
+        direct = (repo.get("local_dir") or "").strip()
+        if direct:
+            return direct
+
+        provider = (repo.get("provider") or "").strip().lower()
+        owner = RepositoryProvider._safe_name(repo.get("owner") or "")
+        slug = RepositoryProvider._safe_name(repo.get("slug") or repo.get("name") or "")
+
+        # 1. Check candidate repositories (active & selected from config)
+        if owner and slug:
+            candidates = []
+            active = self.config.get_active_repository()
+            if active and isinstance(active, dict):
+                candidates.append(active)
+            candidates.extend(self.config.get_selected_repositories() or [])
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                c_owner = RepositoryProvider._safe_name(candidate.get("owner") or "")
+                c_slug = RepositoryProvider._safe_name(candidate.get("slug") or candidate.get("name") or "")
+                c_provider = (candidate.get("provider") or "").strip().lower()
+                if (not provider or not c_provider or provider == c_provider) and owner.lower() == c_owner.lower() and slug.lower() == c_slug.lower():
+                    cand_dir = (candidate.get("local_dir") or "").strip()
+                    if cand_dir and os.path.isdir(cand_dir):
+                        return cand_dir
+
+        # 2. Check managed repo root cache
+        if provider and owner and slug:
+            managed_root = (self.config.get_managed_repo_root() or "").strip()
+            if managed_root:
+                managed_dir = os.path.join(managed_root, provider, owner, slug)
+                if os.path.isdir(managed_dir):
+                    return managed_dir
+
+        return ""
+
     def _repo_dir(self, repo: dict, *, ensure_checkout: bool) -> str:
-        repo_dir = (repo.get("local_dir") or "").strip()
-        if repo_dir:
-            return repo_dir
+        existing = self._find_existing_local_dir(repo)
+        if existing:
+            return existing
         if not ensure_checkout:
             raise ValueError("Repository has no local checkout and ensure_checkout is disabled.")
         return RepositoryProvider.ensure_local_checkout(repo, self.config)
@@ -1338,6 +1536,222 @@ class RepoLensMCPBackend:
         if len(text) <= limit:
             return text, False
         return text[:limit], True
+
+    def get_pr_ci_status(
+        self,
+        *,
+        reference: str = "",
+        pr_id: str | int = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Fetch CI build status and check runs for a pull request."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+            pr = self.pr_service.get_pull_request(repo, resolved_pr_id)
+
+        commit_hash = pr.get("source_commit") or pr.get("destination_commit") or ""
+        statuses = self.pr_service.get_pull_request_statuses(repo, commit_hash)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "pr_title": pr.get("title") or "",
+            "commit_hash": commit_hash,
+            "ci_status": statuses,
+        }
+
+    def approve_pull_request(
+        self,
+        *,
+        reference: str = "",
+        pr_id: str | int = "",
+        comment: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Formally approve a pull request with an optional review comment."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_service.approve_pull_request(repo, resolved_pr_id, comment=comment)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "result": result,
+        }
+
+    def unapprove_pull_request(
+        self,
+        *,
+        reference: str = "",
+        pr_id: str | int = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Revoke / dismiss an approval on a pull request."""
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_service.unapprove_pull_request(repo, resolved_pr_id)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "result": result,
+        }
+
+    def request_changes_on_pr(
+        self,
+        *,
+        comment: str,
+        reference: str = "",
+        pr_id: str | int = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Request changes on a pull request with structured review feedback."""
+        if not comment or not comment.strip():
+            raise ValueError("Feedback comment is required when requesting changes.")
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket, or title/PR#) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                repo_dir=repo_dir,
+            )
+            resolved_pr_id = pr.get("id") or target_pr_id
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            resolved_pr_id = target_pr_id
+
+        result = self.pr_service.request_changes_on_pr(repo, resolved_pr_id, comment=comment)
+        return {
+            "repository": self._repo_identity(repo),
+            "pr_id": str(resolved_pr_id),
+            "result": result,
+        }
+
+    def get_file_content_at_ref(
+        self,
+        *,
+        file_path: str,
+        ref: str,
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Retrieve full file content at a specific branch, tag, or commit hash directly via REST API."""
+        if not file_path or not file_path.strip():
+            raise ValueError("file_path is required.")
+        if not ref or not ref.strip():
+            raise ValueError("ref (branch, tag, or commit hash) is required.")
+        repo = self.resolve_repository(
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+            allow_direct=True,
+        )
+        content = self.pr_service.get_file_content_at_ref(repo, file_path.strip(), ref.strip())
+        return {
+            "repository": self._repo_identity(repo),
+            "file_path": file_path,
+            "ref": ref,
+            "content": content,
+        }
 
 
 def create_mcp_server(backend: RepoLensMCPBackend | None = None):
@@ -1463,7 +1877,18 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         ensure_checkout: bool = True,
         max_chars: int = DEFAULT_DIFF_CHAR_LIMIT,
     ) -> dict[str, Any]:
-        """Return a repository pull request diff and metadata."""
+        """Return a repository pull request diff and metadata.
+
+        Args:
+            pr_id: Pull request number or ID (e.g. "42").
+            provider: 'github' or 'bitbucket' (defaults to configured provider).
+            workspace: Repository owner/workspace.
+            slug: Repository slug/name.
+            scope: Repo scope ('active', 'selected', or 'specific:<owner>/<slug>').
+            repo_dir: Optional local repository directory path.
+            ensure_checkout: If True, clones or updates a local git checkout. If False or if local checkout is absent, falls back to provider REST API for diff.
+            max_chars: Maximum diff characters to return (clamped to limit).
+        """
         return backend.get_pr_diff(
             pr_id=pr_id,
             provider=provider,
@@ -1587,7 +2012,18 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         max_chars: int = DEFAULT_DIFF_CHAR_LIMIT,
         include_comments: bool = False,
     ) -> dict[str, Any]:
-        """A unified tool to get both PR metadata and diff from a URL, ticket, or title, with optional comments."""
+        """A unified tool to get both PR metadata and diff from a URL, ticket, or title, with optional comments.
+
+        Args:
+            reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
+            provider: 'github' or 'bitbucket' (defaults to configured provider).
+            workspace: Repository owner/workspace.
+            slug: Repository slug/name.
+            repo_dir: Optional local repository directory path.
+            ensure_checkout: If True, clones or updates a local git checkout. If False or if local checkout is absent, falls back to provider REST API for diff.
+            max_chars: Maximum diff characters to return (clamped to limit).
+            include_comments: If True, includes PR review comments, unresolved threads, and AI-ready summary.
+        """
         return backend.get_pr_context(
             reference=reference,
             provider=provider,
@@ -1660,11 +2096,12 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Note for AI agents: Write in a natural, concise, human-like engineer tone (1-3 sentences).
         Avoid robotic AI pleasantries, greetings, or meta-commentary (e.g. avoid 'Certainly!',
-        'Great suggestion!', 'Thank you for the review!', or 'As an AI...'). State technical details
-        or changes directly.
+        'Great suggestion!', 'Thank you for the review!', or 'As an AI...'). Do NOT mention commit hashes,
+        SHA values, or commit IDs — citing commit hashes looks like an automated bot rather than a natural engineer.
+        State technical details or changes directly in plain language.
 
         Args:
-            body: The text of the comment to post (write in a concise, natural, human-like engineer tone).
+            body: The text of the comment to post (write in a concise, natural, human-like engineer tone; do NOT cite commit values/hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             file_path: Optional relative file path for inline code comments (e.g. "src/main.py").
@@ -1691,6 +2128,37 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         )
 
     @app.tool()
+    def add_pr_comments(
+        comments: list[dict[str, Any]],
+        pr_id: str = "",
+        reference: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Post multiple general or inline comments on one PR in a single MCP call.
+
+        Each item has a required `body` and optional `file_path`, `line`, and `side`.
+        Supply `file_path` and `line` together for an inline comment; otherwise it is
+        a general comment. `side` accepts the same values as `add_pr_comment`.
+        Note for AI agents: Write in a natural, concise human engineer tone and do NOT mention commit hashes, SHA values, or commit IDs.
+        Results preserve input order and report failures individually; successful
+        comments remain posted if another item fails. Avoid retrying successful items.
+        """
+        return backend.add_pr_comments(
+            comments=comments,
+            pr_id=pr_id,
+            reference=reference,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
     def reply_to_pr_comment(
         comment_id: str,
         body: str,
@@ -1706,12 +2174,15 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Note for AI agents: Write replies in a natural, concise, human engineer tone (1-3 sentences).
         Avoid robotic AI filler, pleasantries, or boilerplate (e.g. avoid 'Certainly!', 'Great catch!',
-        'Thank you for the feedback!', or 'As an AI...'). State what was updated or resolved directly
-        (e.g., 'Fixed in abc1234', 'Added the missing null check here', 'Renamed bean to avoid conflict').
+        'Thank you for the feedback!', or 'As an AI...'). Do NOT mention commit hashes, SHA values, or
+        commit IDs (e.g. avoid 'Fixed in abc1234' or 'Resolved in commit 9f8a12b') — citing commit SHAs
+        looks like an automated bot rather than a natural engineer. State what was updated or resolved
+        directly in plain language (e.g., 'Added the missing null check here', 'Renamed bean to avoid conflict',
+        'Updated validation logic').
 
         Args:
             comment_id: The ID of the comment to reply to.
-            body: The text of the reply (write in a concise, natural, human-like engineer tone).
+            body: The text of the reply (write in a concise, natural, human-like engineer tone; do NOT cite commit values/hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -1747,10 +2218,13 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Note for AI agents: Write replies in a natural, concise, human engineer tone (1-3 sentences per thread).
         Avoid robotic AI filler, pleasantries, or boilerplate (e.g. avoid 'Certainly!', 'Great catch!',
-        'Thank you for the feedback!', or 'As an AI...'). State what was updated or resolved directly.
+        'Thank you for the feedback!', or 'As an AI...'). Do NOT mention commit hashes, SHA values, or
+        commit IDs (e.g. avoid 'Fixed in abc1234' or 'Resolved in commit 9f8a12b') — citing commit SHAs
+        looks like an automated bot rather than a natural engineer. State what was updated or resolved
+        directly in plain language.
 
         Args:
-            replies: Items containing 'comment_id' and 'body' (human-like, concise response text).
+            replies: Items containing 'comment_id' and 'body' (human-like, concise response text without commit hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID, or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -1785,11 +2259,11 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         """Edit an existing comment on a pull request.
 
         Note for AI agents: Write in a natural, concise, human engineer tone. Avoid robotic AI filler
-        or boilerplate. State technical context directly.
+        or boilerplate. Do NOT cite commit hashes, SHA values, or commit IDs. State technical context directly in plain language.
 
         Args:
             comment_id: The ID of the comment to edit.
-            body: The updated text of the comment (write in a concise, natural, human-like engineer tone).
+            body: The updated text of the comment (write in a concise, natural, human-like engineer tone; do NOT cite commit values/hashes).
             pr_id: Pull request number or ID (e.g. "42").
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
@@ -2051,6 +2525,167 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
             repo_dir=repo_dir,
             source_branch=source_branch,
             target_branch=target_branch,
+        )
+
+    @app.tool()
+    def get_pr_ci_status(
+        reference: str = "",
+        pr_id: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Fetch live CI build status, test pipelines, and check runs for a pull request.
+        
+        Inspects GitHub Actions / Check Runs and Bitbucket Commit Statuses to verify build
+        and test pass/fail results prior to review or approval.
+        """
+        return backend.get_pr_ci_status(
+            reference=reference,
+            pr_id=pr_id,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def list_pipelines(branch: str, provider: str = "", workspace: str = "", slug: str = "",
+                       scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """List manually runnable pipelines and their inputs for a remote branch."""
+        return backend.list_pipelines(branch, provider=provider, workspace=workspace, slug=slug,
+                                      scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def run_pipeline(branch: str, pipeline_id: str, inputs: Optional[dict[str, str]] = None,
+                     kind: str = "", provider: str = "", workspace: str = "", slug: str = "",
+                     scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """Start a GitHub Actions workflow or Bitbucket pipeline with ordinary input values."""
+        return backend.run_pipeline(branch, pipeline_id, inputs=inputs, kind=kind, provider=provider,
+                                    workspace=workspace, slug=slug, scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def list_pipeline_runs(pipeline_id: str = "", branch: str = "", limit: int = 30,
+                           provider: str = "", workspace: str = "", slug: str = "",
+                           scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """List recent pipeline or workflow runs for a repository."""
+        return backend.list_pipeline_runs(pipeline_id=pipeline_id, branch=branch, limit=limit,
+                                          provider=provider, workspace=workspace, slug=slug,
+                                          scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def get_pipeline_run(run_id: str, provider: str = "", workspace: str = "", slug: str = "",
+                         scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """Get current pipeline status and steps or jobs for a run ID."""
+        return backend.get_pipeline_run(run_id, provider=provider, workspace=workspace,
+                                        slug=slug, scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def get_pipeline_log(run_id: str, step_id: str, max_chars: int = 256000,
+                         provider: str = "", workspace: str = "", slug: str = "",
+                         scope: str = "", repo_dir: str = "") -> dict[str, Any]:
+        """Get bounded text log for a Bitbucket step or GitHub job."""
+        return backend.get_pipeline_log(run_id, step_id, max_chars=max_chars, provider=provider,
+                                        workspace=workspace, slug=slug, scope=scope, repo_dir=repo_dir)
+
+    @app.tool()
+    def approve_pull_request(
+        reference: str = "",
+        pr_id: str = "",
+        comment: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Formally approve a pull request with an optional review comment.
+
+        Submits review approval to GitHub or Bitbucket Cloud.
+        Note for AI agents: If providing a comment, write in a natural human engineer tone.
+        Do NOT mention commit hashes, SHA values, or commit IDs.
+        """
+        return backend.approve_pull_request(
+            reference=reference,
+            pr_id=pr_id,
+            comment=comment,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def unapprove_pull_request(
+        reference: str = "",
+        pr_id: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Revoke or dismiss an approval on a pull request."""
+        return backend.unapprove_pull_request(
+            reference=reference,
+            pr_id=pr_id,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def request_changes_on_pr(
+        comment: str,
+        reference: str = "",
+        pr_id: str = "",
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Submit a formal 'Request Changes' review on a pull request with feedback notes.
+
+        Note for AI agents: Keep feedback constructive, clear, and direct. Do NOT mention commit hashes,
+        SHA values, or commit IDs.
+        """
+        return backend.request_changes_on_pr(
+            comment=comment,
+            reference=reference,
+            pr_id=pr_id,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
+        )
+
+    @app.tool()
+    def get_file_content_at_ref(
+        file_path: str,
+        ref: str,
+        provider: str = "",
+        workspace: str = "",
+        slug: str = "",
+        scope: str = "",
+        repo_dir: str = "",
+    ) -> dict[str, Any]:
+        """Retrieve the complete file contents of any file at a specific branch, tag, or commit ref via REST API without requiring a local git checkout."""
+        return backend.get_file_content_at_ref(
+            file_path=file_path,
+            ref=ref,
+            provider=provider,
+            workspace=workspace,
+            slug=slug,
+            scope=scope,
+            repo_dir=repo_dir,
         )
 
     return app

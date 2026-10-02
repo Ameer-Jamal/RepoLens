@@ -28,6 +28,12 @@ class PRAggregationServiceTests(unittest.TestCase):
         normalized = PRAggregationService.normalize_next_state(self.repos, {"r1": "next1"})
         self.assertEqual(normalized, {"r1": "next1", "r2": ""})
 
+    def test_repository_without_provider_id_can_paginate(self):
+        repo = {"provider": "bitbucket", "owner": "workspace", "slug": "repo"}
+        key = "bitbucket:workspace/repo"
+        self.assertEqual(PRAggregationService.seed_cursor_state([repo]), {key: ""})
+        self.assertEqual(PRAggregationService.repos_for_page([repo], {key: "next"}, reset=False), [(repo, "next")])
+
     def test_has_more(self):
         self.assertFalse(PRAggregationService.has_more({"r1": "", "r2": ""}))
         self.assertTrue(PRAggregationService.has_more({"r1": "next", "r2": ""}))

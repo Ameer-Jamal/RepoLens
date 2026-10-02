@@ -22,6 +22,9 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QTextEdit,
     QToolButton,
+    QComboBox,
+    QTabWidget,
+    QSizePolicy,
 )
 
 from services.RepositoryProvider import RepositoryProvider
@@ -33,6 +36,7 @@ class SettingsTab(QWidget):
     settingsUpdated = pyqtSignal()
     providerChanged = pyqtSignal(str)
     activeRepositoriesChanged = pyqtSignal(list)
+    themeChanged = pyqtSignal()
 
     def __init__(self, config_manager, task_runner=None):
         super().__init__()
@@ -73,6 +77,7 @@ class SettingsTab(QWidget):
         self.ai_custom_links_input = None
         self.ai_copy_with_prompt_checkbox = None
         self.ai_prompt_text_edit = None
+        self.theme_combo = None
 
         self._repos = []
         self._activation_in_progress = False
@@ -105,9 +110,16 @@ class SettingsTab(QWidget):
         return button
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(18)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(15, 15, 15, 15)
+        tabs = QTabWidget(self)
+        root_layout.addWidget(tabs)
+
+        connections_page = QWidget(tabs)
+        layout = QVBoxLayout(connections_page)
+        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setSpacing(14)
+        tabs.addTab(connections_page, "Connections")
 
         provider_group = QGroupBox("Provider", self)
         provider_layout = QHBoxLayout(provider_group)
@@ -187,14 +199,39 @@ class SettingsTab(QWidget):
         gh_form.addRow(QLabel("Token:"), self.github_token_input)
 
         layout.addWidget(self.github_group)
+        layout.addStretch()
 
-        application_group = QGroupBox("Application Settings", self)
+        repositories_page = QWidget(tabs)
+        repositories_layout = QVBoxLayout(repositories_page)
+        repositories_layout.setContentsMargins(12, 16, 12, 12)
+        tabs.addTab(repositories_page, "Repositories")
+
+        appearance_page = QWidget(tabs)
+        layout = QVBoxLayout(appearance_page)
+        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setSpacing(14)
+        tabs.addTab(appearance_page, "Appearance && Files")
+
+        application_group = QGroupBox("Appearance && File Handling", self)
         application_form = QFormLayout(application_group)
         application_form.setLabelAlignment(Qt.AlignRight)
         application_form.setFormAlignment(Qt.AlignLeft)
         application_form.setContentsMargins(12, 12, 12, 12)
         application_form.setHorizontalSpacing(12)
         application_form.setVerticalSpacing(8)
+
+        self.theme_combo = QComboBox(self)
+        for label, value in (("Midnight", "Midnight"), ("Aurora", "Aurora"),
+                             ("Forest", "Forest"), ("Classic (original)", "Classic")):
+            self.theme_combo.addItem(label, value)
+        self.theme_combo.setMinimumWidth(240)
+        self.theme_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.theme_combo.setStyleSheet("QComboBox { padding-right: 24px; }")
+        self.theme_combo.setToolTip("Choose the app's color theme")
+        self.theme_combo.currentIndexChanged.connect(
+            lambda: self._store_theme(self.theme_combo.currentData())
+        )
+        application_form.addRow(QLabel("Theme:"), self.theme_combo)
 
         output_layout = QHBoxLayout()
         self.output_input = QLineEdit(self)
@@ -229,6 +266,18 @@ class SettingsTab(QWidget):
         self.copy_to_clipboard_checkbox.setToolTip("After generating a diff, copy the content to clipboard.")
         self.copy_to_clipboard_checkbox.toggled.connect(self._store_copy_to_clipboard)
         application_form.addRow(self.copy_to_clipboard_checkbox)
+        layout.addWidget(application_group)
+        layout.addStretch()
+
+        ai_page = QWidget(tabs)
+        layout = QVBoxLayout(ai_page)
+        layout.setContentsMargins(12, 16, 12, 12)
+        tabs.addTab(ai_page, "AI Assistant")
+        ai_group = QGroupBox("AI Assistant Options", self)
+        ai_form = QFormLayout(ai_group)
+        ai_form.setLabelAlignment(Qt.AlignRight)
+        ai_form.setHorizontalSpacing(12)
+        ai_form.setVerticalSpacing(8)
         ai_header_row = QHBoxLayout()
         ai_header_label = QLabel("AI Assistant Options", self)
         ai_header_label.setStyleSheet("QLabel { font-weight: 600; }")
@@ -240,11 +289,11 @@ class SettingsTab(QWidget):
             )
         )
         ai_header_row.addStretch()
-        application_form.addRow(ai_header_row)
+        ai_form.addRow(ai_header_row)
         self.copy_open_ai_checkbox = QCheckBox("Copy and open AI tabs (OpenAI, Claude, Gemini, Grok)", self)
         self.copy_open_ai_checkbox.setToolTip("Copies diff text, then opens browser tabs for supported AI tools.")
         self.copy_open_ai_checkbox.toggled.connect(self._store_copy_open_ai)
-        application_form.addRow(self.copy_open_ai_checkbox)
+        ai_form.addRow(self.copy_open_ai_checkbox)
         ai_targets_row = QHBoxLayout()
         self.ai_openai_checkbox = QCheckBox("OpenAI", self)
         self.ai_openai_checkbox.toggled.connect(self._store_ai_targets)
@@ -259,24 +308,25 @@ class SettingsTab(QWidget):
         self.ai_grok_checkbox.toggled.connect(self._store_ai_targets)
         ai_targets_row.addWidget(self.ai_grok_checkbox)
         ai_targets_row.addStretch()
-        application_form.addRow(QLabel("AI Tabs:"), ai_targets_row)
+        ai_form.addRow(QLabel("AI Tabs:"), ai_targets_row)
         self.ai_custom_links_input = QLineEdit(self)
         self.ai_custom_links_input.setPlaceholderText("Custom AI links (comma-separated URLs)")
         self.ai_custom_links_input.setToolTip("Enter one or more URLs separated by commas.")
         self.ai_custom_links_input.editingFinished.connect(self._store_ai_custom_links)
-        application_form.addRow(QLabel("Custom Links:"), self.ai_custom_links_input)
+        ai_form.addRow(QLabel("Custom Links:"), self.ai_custom_links_input)
         self.ai_copy_with_prompt_checkbox = QCheckBox("Copy with prompt", self)
         self.ai_copy_with_prompt_checkbox.setToolTip("Prepends your prompt above copied diff content.")
         self.ai_copy_with_prompt_checkbox.toggled.connect(self._store_ai_copy_with_prompt)
-        application_form.addRow(self.ai_copy_with_prompt_checkbox)
+        ai_form.addRow(self.ai_copy_with_prompt_checkbox)
         self.ai_prompt_text_edit = QTextEdit(self)
         self.ai_prompt_text_edit.setPlaceholderText("Example: Review this diff and list risks, bugs, and improvements.")
         self.ai_prompt_text_edit.setToolTip("Editable prompt used when 'Copy with prompt' is enabled.")
         self.ai_prompt_text_edit.setFixedHeight(90)
         self.ai_prompt_text_edit.textChanged.connect(self._store_ai_prompt_text)
-        application_form.addRow(QLabel("Prompt Text:"), self.ai_prompt_text_edit)
+        ai_form.addRow(QLabel("Prompt Text:"), self.ai_prompt_text_edit)
 
-        layout.addWidget(application_group)
+        layout.addWidget(ai_group)
+        layout.addStretch()
 
         discovery_group = QGroupBox("Repository Discovery", self)
         discovery_layout = QVBoxLayout(discovery_group)
@@ -335,12 +385,14 @@ class SettingsTab(QWidget):
         self.selected_repo_list = QListWidget(self)
         discovery_layout.addWidget(self.selected_repo_list)
 
-        layout.addWidget(discovery_group)
-        layout.addStretch()
+        repositories_layout.addWidget(discovery_group)
 
     # ------------------------------------------------------------------
     # Configuration helpers
     def apply_repo_config(self):
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(self.config.get_theme())))
+        self.theme_combo.blockSignals(False)
         provider = self.config.get_provider()
         self._set_provider(provider)
 
@@ -389,6 +441,12 @@ class SettingsTab(QWidget):
         }
         self._update_visibility()
         self._apply_selected_repo_selection()
+
+    def _store_theme(self, theme: str):
+        if not theme:
+            return
+        self.config.set_theme(theme)
+        self.themeChanged.emit()
 
     def _apply_selected_repo_selection(self):
         selected_repos = list(self._selected_repo_map.values())

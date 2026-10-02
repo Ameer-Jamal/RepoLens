@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 datas = [
     ('repolens_default_config.json', '.'),
+    ('ui/approval_chime.wav', 'ui'),
 ]
 
 hiddenimports = [
@@ -10,6 +11,7 @@ hiddenimports = [
     'PyQt5.QtCore',
     'PyQt5.QtGui',
     'PyQt5.QtWidgets',
+    'PyQt5.QtMultimedia',
     'pygments',
     'pygments.lexers',
     'pygments.formatters',
@@ -18,6 +20,7 @@ hiddenimports = [
     'mcp.server',
     'mcp.server.fastmcp',
     'requests',
+    'yaml',
     'services',
     'models',
     'ui',
@@ -86,8 +89,8 @@ app = BUNDLE(
         'CFBundleName': 'RepoLens',
         'CFBundleDisplayName': 'RepoLens',
         'CFBundleIdentifier': 'com.repolens.app',
-        'CFBundleVersion': '1.0.0',
-        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': '1.1.0',
+        'CFBundleShortVersionString': '1.1.0',
         'NSHighResolutionCapable': 'True',
     },
 )

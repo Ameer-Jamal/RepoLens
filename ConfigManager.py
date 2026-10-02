@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -63,6 +64,8 @@ class ConfigManager:
         "ai_custom_links_json": "[]",
         "ai_copy_with_prompt": "false",
         "ai_prompt_text": "Review this diff and provide concise feedback:",
+        "diff_font_size": "13",
+        "theme": "Midnight",
     }
     LEGACY_REPO_PROVIDER_KEYS = (
         "provider",
@@ -504,6 +507,33 @@ class ConfigManager:
         }
         self._set_discovery_cache(cache)
 
+    @staticmethod
+    def _pipeline_parameters_key(repo: dict, branch: str, pipeline_id: str) -> str:
+        identity = [
+            str(repo.get("provider") or "").lower(),
+            str(repo.get("owner") or "").lower(),
+            str(repo.get("slug") or "").lower(),
+            str(branch or ""),
+            str(pipeline_id or ""),
+        ]
+        digest = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return f"pipeline_parameters/{digest}"
+
+    def get_pipeline_parameters(self, repo: dict, branch: str, pipeline_id: str) -> dict[str, str]:
+        raw = self.settings.value(self._pipeline_parameters_key(repo, branch, pipeline_id), "", str)
+        try:
+            values = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return {}
+        return {str(key): str(value) for key, value in values.items()} if isinstance(values, dict) else {}
+
+    def set_pipeline_parameters(self, repo: dict, branch: str, pipeline_id: str, values: dict[str, str]) -> None:
+        clean = {str(key): str(value) for key, value in values.items()}
+        self.settings.setValue(self._pipeline_parameters_key(repo, branch, pipeline_id), json.dumps(clean))
+
+    def clear_pipeline_parameters(self, repo: dict, branch: str, pipeline_id: str) -> None:
+        self.settings.remove(self._pipeline_parameters_key(repo, branch, pipeline_id))
+
     def get_contribution_history_state(self) -> dict:
         raw = self._get_global("contribution_history_state_json")
         try:
@@ -589,6 +619,25 @@ class ConfigManager:
 
     def set_ai_prompt_text(self, text: str) -> None:
         self._set_global("ai_prompt_text", text or "")
+
+    def get_diff_font_size(self) -> int:
+        try:
+            return int(self._get_global("diff_font_size") or "13")
+        except (TypeError, ValueError):
+            return 13
+
+    def set_diff_font_size(self, size: int) -> None:
+        clamped = max(10, min(24, size))
+        self._set_global("diff_font_size", str(clamped))
+
+    def get_theme(self) -> str:
+        theme = self._get_global("theme")
+        return theme if theme in ("Midnight", "Aurora", "Forest", "Classic") else "Midnight"
+
+    def set_theme(self, theme: str) -> None:
+        if theme not in ("Midnight", "Aurora", "Forest", "Classic"):
+            raise ValueError(f"Unknown theme: {theme}")
+        self._set_global("theme", theme)
 
     def get_managed_repo_root(self) -> str:
         stored = self.settings.value("managed_repo_root", "", str)

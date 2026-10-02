@@ -556,6 +556,100 @@ def test_get_pr_context_includes_comments_when_requested(mock_backend):
                     assert result["comments_formatted"] == "Summary of comments"
 
 
+def test_get_pr_context_fallback_to_rest_diff_when_no_checkout(mock_backend):
+    backend, provider = mock_backend
+    resolved_repo = {
+        "provider": "bitbucket",
+        "owner": "etqdev",
+        "slug": "mt-backend",
+        "full_name": "etqdev/mt-backend",
+        "local_dir": "",
+    }
+    resolved_pr = {"id": 2917, "title": "Feature branch"}
+
+    with patch.object(backend, "resolve_pr_from_reference", return_value=(resolved_repo, resolved_pr)):
+        with patch.object(backend.pr_service, "get_pull_request_diff_text", return_value="diff --git from rest") as mock_rest_diff:
+            with patch.object(backend.pr_comment_service, "get_pull_request_comments") as mock_comments:
+                mock_comments.return_value = {
+                    "summary": {"total_comments": 1, "unresolved_threads": 0},
+                    "threads": [],
+                    "comments": [{"id": 100}],
+                    "formatted_summary": "Clean",
+                }
+
+                result = backend.get_pr_context(
+                    reference="https://bitbucket.org/etqdev/mt-backend/pull-requests/2917",
+                    ensure_checkout=False,
+                    include_comments=True,
+                )
+
+                assert result["diff_text"] == "diff --git from rest"
+                assert result["repo_dir"] == ""
+                assert result["pr"]["id"] == 2917
+                assert result["comments"][0]["id"] == 100
+                mock_rest_diff.assert_called_once_with(resolved_repo, 2917)
+
+
+def test_get_pr_diff_surfaces_failure_when_local_and_provider_diff_fail(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "get_pull_request", return_value={"id": "42"}), patch.object(
+        backend, "_repo_dir", side_effect=RuntimeError("Checkout unavailable")
+    ), patch.object(backend.pr_service, "get_pull_request_diff_text", side_effect=RuntimeError("API unavailable")):
+        with pytest.raises(RuntimeError, match="API unavailable"):
+            backend.get_pr_diff(pr_id="42")
+
+
+def test_get_pr_diff_fallback_to_rest_diff_when_no_checkout(mock_backend):
+    backend, provider = mock_backend
+    resolved_repo = {
+        "provider": "bitbucket",
+        "owner": "etqdev",
+        "slug": "mt-backend",
+        "full_name": "etqdev/mt-backend",
+        "local_dir": "",
+    }
+    resolved_pr = {"id": "2917", "title": "Feature branch", "source_branch": "feature", "destination_branch": "main"}
+
+    with patch.object(backend, "resolve_repository", return_value=resolved_repo):
+        with patch.object(backend.pr_service, "get_pull_request", return_value=resolved_pr):
+            with patch.object(backend.pr_service, "get_pull_request_diff_text", return_value="diff --git from rest") as mock_rest_diff:
+                result = backend.get_pr_diff(
+                    pr_id="2917",
+                    ensure_checkout=False,
+                )
+
+                assert result["diff_text"] == "diff --git from rest"
+                assert result["repo_dir"] == ""
+                mock_rest_diff.assert_called_once_with(resolved_repo, "2917")
+
+
+def test_find_existing_local_dir_from_managed_root(mock_backend, tmp_path):
+    backend, _ = mock_backend
+    managed_dir = tmp_path / "bitbucket" / "etqdev" / "mt-backend"
+    managed_dir.mkdir(parents=True)
+    with patch.object(backend.config, "get_managed_repo_root", return_value=str(tmp_path)):
+        with patch.object(backend.config, "get_selected_repositories", return_value=[]):
+            with patch.object(backend.config, "get_active_repository", return_value={}):
+                found = backend._find_existing_local_dir({"provider": "bitbucket", "owner": "etqdev", "slug": "mt-backend"})
+                assert found == str(managed_dir)
+
+
+def test_find_existing_local_dir_from_selected_repos(mock_backend, tmp_path):
+    backend, _ = mock_backend
+    custom_dir = tmp_path / "Reliance-Repos" / "NXG" / "mt-backend"
+    custom_dir.mkdir(parents=True)
+    with patch.object(backend.config, "get_managed_repo_root", return_value=str(tmp_path / "managed")):
+        with patch.object(
+            backend.config,
+            "get_selected_repositories",
+            return_value=[{"provider": "bitbucket", "owner": "etqdev", "slug": "mt-backend", "local_dir": str(custom_dir)}],
+        ):
+            with patch.object(backend.config, "get_active_repository", return_value={}):
+                found = backend._find_existing_local_dir({"provider": "bitbucket", "owner": "etqdev", "slug": "mt-backend"})
+                assert found == str(custom_dir)
+
+
+
 def test_add_pr_comment(mock_backend):
     backend, _ = mock_backend
     with patch.object(backend.pr_comment_service, "add_comment") as mock_add:
@@ -564,6 +658,79 @@ def test_add_pr_comment(mock_backend):
         assert res["pr_id"] == "42"
         assert res["comment"]["id"] == 123
         mock_add.assert_called_once()
+
+
+def test_add_pr_comments_posts_general_and_inline_in_order(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_comment_service, "add_comment") as mock_add:
+        mock_add.side_effect = [{"id": 201}, {"id": 202}]
+        result = backend.add_pr_comments(
+            comments=[
+                {"body": "Overall feedback"},
+                {"body": "Fix this line", "file_path": "src/app.py", "line": 12, "side": "to"},
+            ],
+            pr_id="42",
+            slug="backend-service",
+        )
+
+    assert result["pr_id"] == "42"
+    assert result["summary"] == {"requested": 2, "succeeded": 2, "failed": 0}
+    assert [entry["comment"]["id"] for entry in result["results"]] == [201, 202]
+    backend.resolve_repository.assert_called_once_with(
+        provider="", workspace="", slug="backend-service", scope="", repo_dir="", allow_direct=True
+    )
+    repo = backend.resolve_repository.return_value
+    assert mock_add.call_args_list[0].args == (repo, "42", "Overall feedback")
+    assert mock_add.call_args_list[0].kwargs == {"file_path": None, "line": None, "side": None}
+    assert mock_add.call_args_list[1].args == (repo, "42", "Fix this line")
+    assert mock_add.call_args_list[1].kwargs == {"file_path": "src/app.py", "line": 12, "side": "to"}
+
+
+def test_add_pr_comments_reports_failures_without_posting_invalid_inline_comments(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_comment_service, "add_comment") as mock_add:
+        mock_add.side_effect = [{"id": 201}, RuntimeError("Provider rejected comment")]
+        result = backend.add_pr_comments(
+            comments=[
+                {"body": "First"},
+                {"body": "Missing line", "file_path": "src/app.py"},
+                {"body": "Third"},
+            ],
+            pr_id="42",
+        )
+
+    assert result["summary"] == {"requested": 3, "succeeded": 1, "failed": 2}
+    assert result["results"][0] == {"index": 0, "success": True, "comment": {"id": 201}}
+    assert result["results"][1]["index"] == 1
+    assert "require both" in result["results"][1]["error"]
+    assert result["results"][2] == {"index": 2, "success": False, "error": "Provider rejected comment"}
+    assert mock_add.call_count == 2
+
+
+def test_add_pr_comments_validates_request(mock_backend):
+    backend, _ = mock_backend
+    with pytest.raises(ValueError, match="At least one comment"):
+        backend.add_pr_comments(comments=[], pr_id="42")
+    with pytest.raises(ValueError, match="Either 'pr_id' or 'reference'"):
+        backend.add_pr_comments(comments=[{"body": "Hello"}])
+    backend.resolve_repository.assert_not_called()
+
+
+def test_add_pr_comments_resolves_reference_once(mock_backend):
+    backend, _ = mock_backend
+    repo = backend.resolve_repository.return_value
+    backend.resolve_pr_from_reference = MagicMock(return_value=(repo, {"id": 42}))
+    with patch.object(backend.pr_comment_service, "add_comment", return_value={"id": 201}) as mock_add:
+        result = backend.add_pr_comments(
+            comments=[{"body": "First"}, {"body": "Second"}],
+            reference="https://bitbucket.org/example-workspace/backend-service/pull-requests/42",
+            provider="bitbucket",
+        )
+
+    assert result["pr_id"] == 42
+    backend.resolve_pr_from_reference.assert_called_once()
+    backend.resolve_repository.assert_not_called()
+    assert mock_add.call_count == 2
 
 
 def test_reply_to_pr_comment(mock_backend):
@@ -659,3 +826,65 @@ def test_unresolve_pr_comment(mock_backend):
             "123",
             unresolve=True,
         )
+
+
+def test_get_pr_ci_status(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "get_pull_request") as mock_pr, \
+         patch.object(backend.pr_service, "get_pull_request_statuses") as mock_status:
+        mock_pr.return_value = {"id": 42, "title": "Test PR", "source_commit": "c0ffee"}
+        mock_status.return_value = {
+            "state": "SUCCESSFUL",
+            "total_count": 5,
+            "successful_count": 5,
+            "failed_count": 0,
+            "inprogress_count": 0,
+            "statuses": [{"name": "CI", "state": "SUCCESSFUL"}],
+        }
+
+        res = backend.get_pr_ci_status(pr_id="42")
+        assert res["pr_id"] == "42"
+        assert res["commit_hash"] == "c0ffee"
+        assert res["ci_status"]["state"] == "SUCCESSFUL"
+        assert res["ci_status"]["successful_count"] == 5
+
+
+def test_approve_pull_request(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "approve_pull_request") as mock_approve:
+        mock_approve.return_value = {"approved": True, "pr_id": "42"}
+        res = backend.approve_pull_request(pr_id="42", comment="Looks great!")
+        assert res["pr_id"] == "42"
+        assert res["result"]["approved"] is True
+        mock_approve.assert_called_once()
+
+
+def test_unapprove_pull_request(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "unapprove_pull_request") as mock_unapprove:
+        mock_unapprove.return_value = {"approved": False, "pr_id": "42"}
+        res = backend.unapprove_pull_request(pr_id="42")
+        assert res["pr_id"] == "42"
+        assert res["result"]["approved"] is False
+        mock_unapprove.assert_called_once()
+
+
+def test_request_changes_on_pr(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "request_changes_on_pr") as mock_req:
+        mock_req.return_value = {"changes_requested": True, "pr_id": "42"}
+        res = backend.request_changes_on_pr(pr_id="42", comment="Please fix unit test")
+        assert res["pr_id"] == "42"
+        assert res["result"]["changes_requested"] is True
+        mock_req.assert_called_once()
+
+
+def test_get_file_content_at_ref(mock_backend):
+    backend, _ = mock_backend
+    with patch.object(backend.pr_service, "get_file_content_at_ref") as mock_content:
+        mock_content.return_value = "def hello(): pass\n"
+        res = backend.get_file_content_at_ref(file_path="src/app.py", ref="feature/test")
+        assert res["file_path"] == "src/app.py"
+        assert res["ref"] == "feature/test"
+        assert res["content"] == "def hello(): pass\n"
+        mock_content.assert_called_once()

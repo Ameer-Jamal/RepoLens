@@ -31,6 +31,7 @@ Git providers already contain the context an AI needs, but that context is scatt
 
 6. **MCP Server Mode**: Expose repository discovery, selected repositories, PR lookup, ticket lookup, diffs, and contribution history as local MCP tools for AI clients.
 7. **PR Creation for AI Agents**: Create GitHub or Bitbucket pull requests from already-pushed source branches through the desktop app or MCP.
+8. **Pipeline Runner**: Start Bitbucket Pipelines and GitHub Actions workflows with parameters, then inspect run status, jobs or steps, and logs in the desktop app or through MCP.
 
 ---
 
@@ -91,7 +92,9 @@ python3 main.py
 
 4. **Use the main tabs**:
 
-   - `PR Lens`: list/search PRs, filter by developer, and generate PR or commit diffs.
+   - `PR Lens`: list/search PRs, filter by developer, open in PR Review, and generate PR or commit diffs.
+   - `PR Review`: dedicated in-app code review tab with syntax-highlighted diffs, typography font scaling, changed files navigation, live CI status, and interactive inline comment threading & resolution.
+   - `Pipelines`: choose a repository, remote branch, and runnable pipeline or workflow; review parameters before starting a run, then inspect recent runs and logs. PR Review can preselect a PR's repository and source branch. Check **Remember values** to reuse ordinary parameters for that repository, branch, and pipeline after a successful dispatch; **Forget saved values** clears them.
    - `Branch Commit Viewer`: inspect branch commits.
    - `Create PR`: create pull requests from configured repositories.
    - `Contribution History`: reconstruct work by developer, repository, branch, and date.
@@ -107,7 +110,7 @@ Contribution results appear as each repository finishes. For the fast Bitbucket 
 
 This repo includes a local stdio MCP server at `mcp_server.py`. Any MCP-compatible AI client can launch it and use RepoLens as a tool source.
 
-Read tools do not change provider data. The explicitly named create, update, and comment tools can create PRs or modify PR metadata and comments. RepoLens may also clone or fetch local repositories when a diff tool needs a checkout. Most tools do not edit repository files or create commits; `create_pull_request_with_changes` is the exception, and it is the only tool that writes files, creates a branch, commits, and pushes.
+Read tools do not change provider data. The explicitly named create, update, comment, and `run_pipeline` tools can create PRs, modify PR metadata or comments, or start remote CI runs. RepoLens may also clone or fetch local repositories when a diff tool needs a checkout. Most tools do not edit repository files or create commits; `create_pull_request_with_changes` is the exception, and it is the only tool that writes files, creates a branch, commits, and pushes.
 
 ### **Tools**
 
@@ -126,7 +129,18 @@ Read tools do not change provider data. The explicitly named create, update, and
 - `analyze_file_history` (Unified commit and PR history for a specific file)
 - `get_pr_context` (Unified tool to get PR metadata and diff from a URL, ticket, or title, with optional comment threads)
 - `get_pr_comments` (Fetch comments and review threads on a PR with file paths, line numbers, code context snippets, and AI-ready summary)
+- `get_pr_ci_status` (Fetch live CI build status, test pipelines, and check runs for a pull request)
+- `list_pipelines` (Discover runnable pipelines and their available inputs on a remote branch)
+- `run_pipeline` (Start a Bitbucket Pipeline or GitHub Actions workflow with parameters)
+- `list_pipeline_runs` (List recent runs)
+- `get_pipeline_run` (Inspect run status and steps or jobs)
+- `get_pipeline_log` (Read a bounded step or job log)
+- `approve_pull_request` (Formally approve a pull request with an optional review comment)
+- `unapprove_pull_request` (Revoke or dismiss an approval on a pull request)
+- `request_changes_on_pr` (Submit a formal 'Request Changes' review on a pull request with feedback notes)
+- `get_file_content_at_ref` (Retrieve complete file contents of any file at a specific branch, tag, or commit ref via REST API)
 - `add_pr_comment` (Add a general or inline code review comment to a pull request)
+- `add_pr_comments` (Add multiple general or inline comments to one pull request in a single call, with per-comment results)
 - `reply_to_pr_comment` (Reply to an existing comment thread on a pull request)
 - `reply_to_pr_comments` (Reply to multiple threads on one pull request in a single call)
 - `edit_pr_comment` (Edit an existing pull request comment)
@@ -145,7 +159,7 @@ For AI-driven PR creation, a good workflow is:
 3. Call `get_git_repository_context` with the checkout path and branch names to confirm provider/repository context and remote branch availability.
 4. Use `repo_dir` or explicit `provider`/`workspace`/`slug` when calling PR tools so the MCP does not depend on the desktop app's active repository.
 
-`list_pull_requests`, `get_pr_diff`, `get_commit_diff`, `get_pr_comments`, `add_pr_comment`, `reply_to_pr_comment`, `reply_to_pr_comments`, `edit_pr_comment`, `delete_pr_comment`, `resolve_pr_comment`, `unresolve_pr_comment`, `create_pull_request`, `create_pull_request_with_changes`, and `update_pull_request` accept `repo_dir` for local-checkout-based repository inference. `create_pull_request` does not edit files, create commits, push branches, or mutate RepoLens app configuration. `create_pull_request_with_changes` requires a clean checkout, then creates and pushes a branch as described above. For MCP automation, prefer environment variables such as `REPOLENS_GITHUB_TOKEN`, `REPOLENS_BITBUCKET_USERNAME` (your Atlassian email), and `REPOLENS_BITBUCKET_API_TOKEN` over relying on the desktop app's currently selected repository.
+`list_pull_requests`, `get_pr_diff`, `get_commit_diff`, `get_pr_comments`, `add_pr_comment`, `add_pr_comments`, `reply_to_pr_comment`, `reply_to_pr_comments`, `edit_pr_comment`, `delete_pr_comment`, `resolve_pr_comment`, `unresolve_pr_comment`, `create_pull_request`, `create_pull_request_with_changes`, and `update_pull_request` accept `repo_dir` for local-checkout-based repository inference. `create_pull_request` does not edit files, create commits, push branches, or mutate RepoLens app configuration. `create_pull_request_with_changes` requires a clean checkout, then creates and pushes a branch as described above. For MCP automation, prefer environment variables such as `REPOLENS_GITHUB_TOKEN`, `REPOLENS_BITBUCKET_USERNAME` (your Atlassian email), and `REPOLENS_BITBUCKET_API_TOKEN` over relying on the desktop app's currently selected repository.
 
 ### **General Setup**
 
