@@ -248,6 +248,12 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(pr_context_result.structuredContent["repo_dir"], "/tmp/demo")
 
+            pr_context_by_id_result = await session.call_tool(
+                "get_pr_context",
+                {"pr_id": "2430", "repo_dir": "/tmp/demo"},
+            )
+            self.assertEqual(pr_context_by_id_result.structuredContent["pr"]["id"], 2430)
+
             pr_comments_result = await session.call_tool(
                 "get_pr_comments",
                 {"pr_id": "42", "unresolved_only": True},

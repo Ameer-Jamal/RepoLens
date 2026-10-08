@@ -667,6 +667,7 @@ class RepoLensMCPBackend:
         provider: str = "",
         workspace: str = "",
         slug: str = "",
+        scope: str = "",
         repo_dir: str = "",
     ) -> tuple[dict, dict]:
         """Resolves a PR from a URL, ticket, or title fragment. Returns (repo, pr_metadata)."""
@@ -679,6 +680,7 @@ class RepoLensMCPBackend:
                 provider=provider or url_info["provider"],
                 workspace=workspace or url_info["workspace"],
                 slug=slug or url_info["slug"],
+                scope=scope,
                 repo_dir=repo_dir,
                 allow_direct=True,
             )
@@ -693,7 +695,7 @@ class RepoLensMCPBackend:
                 workspace=workspace,
                 slug=slug,
                 repo_dir=repo_dir,
-                scope="active",
+                scope=scope or "active",
             )
             
             prs = self.pr_service.find_pull_requests_by_ticket(selected, ticket_id)
@@ -704,6 +706,7 @@ class RepoLensMCPBackend:
                     provider=provider or pr.get("provider"),
                     workspace=workspace,
                     slug=slug or (pr.get("repo_label").split("/")[-1] if "/" in pr.get("repo_label") else pr.get("repo_label")),
+                    scope=scope,
                     repo_dir=repo_dir,
                     allow_direct=True,
                 )
@@ -717,8 +720,9 @@ class RepoLensMCPBackend:
                     provider=provider,
                     workspace=workspace,
                     slug=slug,
+                    scope=scope,
                     repo_dir=repo_dir,
-                    allow_direct=bool(provider and workspace and slug) or bool(repo_dir),
+                    allow_direct=bool((provider or self.config.get_provider()) and workspace and slug) or bool(repo_dir),
                 )
                 pr = self.pr_service.get_pull_request(repo, numeric_ref)
                 return repo, pr
@@ -731,7 +735,7 @@ class RepoLensMCPBackend:
             workspace=workspace,
             slug=slug,
             repo_dir=repo_dir,
-            scope="active",
+            scope=scope or "active",
         )
             
         for repo in selected:
@@ -744,23 +748,44 @@ class RepoLensMCPBackend:
     def get_pr_context(
         self,
         *,
-        reference: str,
+        reference: str = "",
+        pr_id: str | int = "",
         provider: str = "",
         workspace: str = "",
         slug: str = "",
+        scope: str = "",
         repo_dir: str = "",
         ensure_checkout: bool = True,
         max_chars: int = DEFAULT_DIFF_CHAR_LIMIT,
         include_comments: bool = False,
     ) -> dict[str, Any]:
         """A unified tool to get both PR metadata and diff from a URL, ticket, or title."""
-        repo, pr = self.resolve_pr_from_reference(
-            reference,
-            provider=provider,
-            workspace=workspace,
-            slug=slug,
-            repo_dir=repo_dir,
-        )
+        target_reference = (reference or "").strip()
+        target_pr_id = str(pr_id or "").strip()
+
+        if not target_reference and not target_pr_id:
+            raise ValueError("Either 'pr_id' or 'reference' (URL, ticket ID, or PR title/number) must be provided.")
+
+        if target_reference:
+            repo, pr = self.resolve_pr_from_reference(
+                target_reference,
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+            )
+        else:
+            repo = self.resolve_repository(
+                provider=provider,
+                workspace=workspace,
+                slug=slug,
+                scope=scope,
+                repo_dir=repo_dir,
+                allow_direct=True,
+            )
+            pr = self.pr_service.get_pull_request(repo, target_pr_id)
+
         effective_repo_dir = ""
         diff_text = ""
         truncated = False
@@ -779,10 +804,10 @@ class RepoLensMCPBackend:
             merge_commit = result.merge_commit or merge_commit
         except Exception:
             effective_repo_dir = (repo.get("local_dir") or repo_dir or "").strip()
-            pr_id = pr.get("id")
-            if pr_id is not None:
+            resolved_diff_id = pr.get("id") or target_pr_id or target_reference
+            if resolved_diff_id is not None:
                 try:
-                    raw_diff = self.pr_service.get_pull_request_diff_text(repo, pr_id)
+                    raw_diff = self.pr_service.get_pull_request_diff_text(repo, resolved_diff_id)
                     diff_text, truncated = self._truncate_text(raw_diff, _clamp_diff_limit(max_chars))
                 except Exception:
                     if not ensure_checkout and not effective_repo_dir:
@@ -805,7 +830,7 @@ class RepoLensMCPBackend:
         if include_comments:
             comments_res = self.pr_comment_service.get_pull_request_comments(
                 repo,
-                pr.get("id"),
+                pr.get("id") or target_pr_id,
                 repo_dir=effective_repo_dir,
                 include_code_context=bool(effective_repo_dir),
             )
@@ -1307,8 +1332,9 @@ class RepoLensMCPBackend:
             desired_workspace = desired_workspace or specific_workspace
             desired_slug = desired_slug or specific_slug
 
-        if allow_direct and provider and workspace and slug:
-            direct = self._direct_repository(provider=provider, workspace=workspace, slug=slug, repo_dir=repo_dir)
+        effective_provider = provider or desired_provider
+        if allow_direct and effective_provider and workspace and slug:
+            direct = self._direct_repository(provider=effective_provider, workspace=workspace, slug=slug, repo_dir=repo_dir)
             existing_dir = self._find_existing_local_dir(direct)
             if existing_dir:
                 direct["local_dir"] = existing_dir
@@ -2003,10 +2029,12 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
     @app.tool()
     def get_pr_context(
-        reference: str,
+        reference: str = "",
+        pr_id: str = "",
         provider: str = "",
         workspace: str = "",
         slug: str = "",
+        scope: str = "",
         repo_dir: str = "",
         ensure_checkout: bool = True,
         max_chars: int = DEFAULT_DIFF_CHAR_LIMIT,
@@ -2016,9 +2044,11 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
 
         Args:
             reference: PR URL, ticket ID (e.g. RU-25463), or PR number/title search.
+            pr_id: Pull request number or ID (e.g. "42"). Can be used instead of or in addition to reference.
             provider: 'github' or 'bitbucket' (defaults to configured provider).
             workspace: Repository owner/workspace.
             slug: Repository slug/name.
+            scope: Repo scope ('active', 'selected', or 'specific:<owner>/<slug>').
             repo_dir: Optional local repository directory path.
             ensure_checkout: If True, clones or updates a local git checkout. If False or if local checkout is absent, falls back to provider REST API for diff.
             max_chars: Maximum diff characters to return (clamped to limit).
@@ -2026,9 +2056,11 @@ def create_mcp_server(backend: RepoLensMCPBackend | None = None):
         """
         return backend.get_pr_context(
             reference=reference,
+            pr_id=pr_id,
             provider=provider,
             workspace=workspace,
             slug=slug,
+            scope=scope,
             repo_dir=repo_dir,
             ensure_checkout=ensure_checkout,
             max_chars=max_chars,

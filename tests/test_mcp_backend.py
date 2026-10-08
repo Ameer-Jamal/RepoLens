@@ -182,6 +182,46 @@ def test_get_pr_context_url_with_repo_dir_uses_direct_resolution():
     assert repo_arg["local_dir"] == "/tmp/backend-service"
 
 
+def test_get_pr_context_with_pr_id(mock_backend):
+    backend, _ = mock_backend
+    resolved_repo = {
+        "provider": "bitbucket",
+        "owner": "etqdev",
+        "slug": "mt-backend",
+        "full_name": "etqdev/mt-backend",
+        "local_dir": "",
+    }
+    resolved_pr = {"id": 2941, "title": "Add feature", "source_branch": "feat", "destination_branch": "main"}
+
+    with patch.object(backend, "resolve_repository", return_value=resolved_repo) as mock_resolve:
+        with patch.object(backend.pr_service, "get_pull_request", return_value=resolved_pr) as mock_get_pr:
+            with patch.object(backend.diff_service, "generate_pr_diff", side_effect=Exception("no local repo")):
+                with patch.object(backend.pr_service, "get_pull_request_diff_text", return_value="diff --git from rest"):
+                    result = backend.get_pr_context(
+                        pr_id="2941",
+                        workspace="etqdev",
+                        slug="mt-backend",
+                    )
+
+    assert result["pr"]["id"] == 2941
+    assert result["diff_text"] == "diff --git from rest"
+    mock_resolve.assert_called_once_with(
+        provider="",
+        workspace="etqdev",
+        slug="mt-backend",
+        scope="",
+        repo_dir="",
+        allow_direct=True,
+    )
+    mock_get_pr.assert_called_once_with(resolved_repo, "2941")
+
+
+def test_get_pr_context_missing_reference_and_pr_id_raises(mock_backend):
+    backend, _ = mock_backend
+    with pytest.raises(ValueError, match="Either 'pr_id' or 'reference'"):
+        backend.get_pr_context()
+
+
 def test_create_pull_request(mock_backend):
     backend, _provider = mock_backend
     backend.resolve_repository.return_value = {
